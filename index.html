@@ -36,6 +36,26 @@
     padding: 5px 10px; border-radius: 4px; cursor: pointer; display: none;
   }
   #clear-selection-btn:hover { background: #405a74; }
+  #auth-section { margin-bottom: 16px; border-bottom: 1px solid #33495f; padding-bottom: 14px; }
+  #auth-logged-out input {
+    width: 100%; box-sizing: border-box; margin-bottom: 6px; padding: 7px 8px;
+    border-radius: 4px; border: 1px solid #33495f; background: #16202b;
+    color: #eef2f7; font-size: 13px;
+  }
+  #auth-buttons-row { display: flex; gap: 6px; margin-bottom: 6px; }
+  #auth-buttons-row button {
+    flex: 1; font-size: 12px; background: #33495f; color: #eef2f7; border: none;
+    padding: 7px 6px; border-radius: 4px; cursor: pointer;
+  }
+  #auth-buttons-row button:hover { background: #405a74; }
+  #auth-error { font-size: 12px; color: #ff6b6b; min-height: 16px; }
+  #auth-logged-in { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  #auth-user-email { font-size: 12px; color: #cfdcea; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #auth-logout-btn {
+    font-size: 12px; background: #33495f; color: #eef2f7; border: none;
+    padding: 6px 10px; border-radius: 4px; cursor: pointer; flex-shrink: 0;
+  }
+  #auth-logout-btn:hover { background: #405a74; }
   #saved-maps-section { margin: 14px 0; border-top: 1px solid #33495f; padding-top: 12px; }
   #saved-maps-header { font-weight: 600; font-size: 13px; margin-bottom: 6px; color: #cfdcea; }
   .saved-map-row {
@@ -97,6 +117,23 @@
   <div id="sidebar">
     <h1>Region / Area / County Map</h1>
     <p class="hint">Load a CSV, then click a region or area below to highlight and zoom to it on the map.</p>
+
+    <div id="auth-section">
+      <div id="auth-logged-out">
+        <input type="email" id="auth-email" placeholder="Email" autocomplete="email">
+        <input type="password" id="auth-password" placeholder="Password" autocomplete="current-password">
+        <div id="auth-buttons-row">
+          <button id="auth-login-btn">Log In</button>
+          <button id="auth-signup-btn">Sign Up</button>
+        </div>
+        <div id="auth-error"></div>
+      </div>
+      <div id="auth-logged-in" style="display:none;">
+        <div id="auth-user-email"></div>
+        <button id="auth-logout-btn">Log Out</button>
+      </div>
+    </div>
+
     <div id="csv-input-row">
       <input type="file" id="csv-file" accept=".csv">
     </div>
@@ -626,60 +663,135 @@ document.getElementById("marker-toggle").addEventListener("change", (event) => {
 });
 
 // ---------------------------------------------------------------------
-// Saved Maps: multiple named CSV datasets persisted in the browser's
-// localStorage, so you can load several exports (different states,
-// sessions, whatever) and switch between them without re-picking a
-// file each time. Everything here is local to this browser/computer --
-// nothing is uploaded anywhere.
+// Accounts + Saved Maps: real multi-user accounts via Firebase
+// Authentication, with each user's saved CSV datasets stored in
+// Firestore under their own account -- separate from anyone else's,
+// and available on any device once logged in (unlike the old
+// localStorage-only version, which was tied to one browser).
+//
+// SETUP REQUIRED: replace FIREBASE_CONFIG below with your own Firebase
+// project's config (Firebase Console -> Project Settings -> your web
+// app -> SDK setup and configuration). You'll also need to enable
+// Email/Password sign-in under Authentication -> Sign-in method, and
+// create a Firestore database (Build -> Firestore Database -> Create).
 // ---------------------------------------------------------------------
-const SAVED_MAPS_KEY = "regionAreaMap_savedMaps";
+const FIREBASE_CONFIG = {
+  apiKey: "YOUR_FIREBASE_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  projectId: "YOUR_PROJECT",
+  storageBucket: "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID",
+};
+
+firebase.initializeApp(FIREBASE_CONFIG);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+let currentUser = null;
 let activeMapName = null;
 
-function getSavedMaps() {
-  try {
-    return JSON.parse(localStorage.getItem(SAVED_MAPS_KEY) || "{}");
-  } catch (e) {
-    return {};
+function showAuthError(message) {
+  document.getElementById("auth-error").textContent = message || "";
+}
+
+document.getElementById("auth-signup-btn").addEventListener("click", () => {
+  const email = document.getElementById("auth-email").value.trim();
+  const password = document.getElementById("auth-password").value;
+  showAuthError("");
+  if (!email || !password) {
+    showAuthError("Enter an email and password first.");
+    return;
   }
+  auth.createUserWithEmailAndPassword(email, password)
+    .catch((error) => showAuthError(error.message));
+});
+
+document.getElementById("auth-login-btn").addEventListener("click", () => {
+  const email = document.getElementById("auth-email").value.trim();
+  const password = document.getElementById("auth-password").value;
+  showAuthError("");
+  if (!email || !password) {
+    showAuthError("Enter an email and password first.");
+    return;
+  }
+  auth.signInWithEmailAndPassword(email, password)
+    .catch((error) => showAuthError(error.message));
+});
+
+document.getElementById("auth-logout-btn").addEventListener("click", () => {
+  auth.signOut();
+});
+
+auth.onAuthStateChanged((user) => {
+  currentUser = user;
+  const loggedOutEl = document.getElementById("auth-logged-out");
+  const loggedInEl = document.getElementById("auth-logged-in");
+
+  if (user) {
+    loggedOutEl.style.display = "none";
+    loggedInEl.style.display = "flex";
+    document.getElementById("auth-user-email").textContent = user.email;
+    document.getElementById("auth-user-email").title = user.email;
+    showAuthError("");
+    document.getElementById("auth-password").value = "";
+  } else {
+    loggedOutEl.style.display = "block";
+    loggedInEl.style.display = "none";
+  }
+
+  activeMapName = null;
+  renderSavedMapsList();
+});
+
+function savedMapsCollection() {
+  return db.collection("users").doc(currentUser.uid).collection("savedMaps");
 }
 
-function setSavedMaps(maps) {
-  localStorage.setItem(SAVED_MAPS_KEY, JSON.stringify(maps));
-}
-
-function saveCurrentMap(name, csvText) {
-  const maps = getSavedMaps();
-  maps[name] = { csvText, savedAt: new Date().toISOString() };
-  setSavedMaps(maps);
+async function saveCurrentMap(name, csvText) {
+  if (!currentUser) {
+    alert("Log in or sign up first to save maps to your account.");
+    return;
+  }
+  await savedMapsCollection().doc(name).set({
+    csvText,
+    savedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  });
   activeMapName = name;
   renderSavedMapsList();
 }
 
-function loadSavedMap(name) {
-  const maps = getSavedMaps();
-  const entry = maps[name];
-  if (!entry) return;
+async function loadSavedMap(name) {
+  if (!currentUser) return;
+  const doc = await savedMapsCollection().doc(name).get();
+  if (!doc.exists) return;
   activeMapName = name;
-  loadCsvText(entry.csvText);
+  loadCsvText(doc.data().csvText);
   renderSavedMapsList();
 }
 
-function deleteSavedMap(name) {
+async function deleteSavedMap(name) {
+  if (!currentUser) return;
   if (!confirm("Delete saved map \"" + name + "\"? This can't be undone.")) return;
-  const maps = getSavedMaps();
-  delete maps[name];
-  setSavedMaps(maps);
+  await savedMapsCollection().doc(name).delete();
   if (activeMapName === name) activeMapName = null;
   renderSavedMapsList();
 }
 
-function renderSavedMapsList() {
+async function renderSavedMapsList() {
   const container = document.getElementById("saved-maps-list");
   container.innerHTML = "";
-  const maps = getSavedMaps();
-  const names = Object.keys(maps).sort();
 
-  if (!names.length) {
+  if (!currentUser) {
+    const empty = document.createElement("div");
+    empty.id = "no-saved-maps";
+    empty.textContent = "Log in to save and load maps tied to your account.";
+    container.appendChild(empty);
+    return;
+  }
+
+  const snapshot = await savedMapsCollection().orderBy("savedAt", "desc").get();
+  if (snapshot.empty) {
     const empty = document.createElement("div");
     empty.id = "no-saved-maps";
     empty.textContent = "No saved maps yet -- load a CSV to save one.";
@@ -687,14 +799,18 @@ function renderSavedMapsList() {
     return;
   }
 
-  for (const name of names) {
+  snapshot.forEach((doc) => {
+    const name = doc.id;
+    const data = doc.data();
     const row = document.createElement("div");
     row.className = "saved-map-row" + (name === activeMapName ? " active" : "");
 
     const label = document.createElement("span");
     label.className = "saved-map-name";
     label.textContent = name;
-    label.title = "Loaded " + new Date(maps[name].savedAt).toLocaleString();
+    if (data.savedAt) {
+      label.title = "Saved " + data.savedAt.toDate().toLocaleString();
+    }
     label.addEventListener("click", () => loadSavedMap(name));
     row.appendChild(label);
 
@@ -709,7 +825,7 @@ function renderSavedMapsList() {
     row.appendChild(del);
 
     container.appendChild(row);
-  }
+  });
 }
 
 document.getElementById("csv-file").addEventListener("change", (event) => {
@@ -719,10 +835,14 @@ document.getElementById("csv-file").addEventListener("change", (event) => {
   reader.onload = (e) => {
     const csvText = e.target.result;
     const defaultName = file.name.replace(/\.csv$/i, "");
+    if (!currentUser) {
+      // Not logged in -- still show it on the map for this session,
+      // just can't persist it to an account.
+      loadCsvText(csvText);
+      return;
+    }
     const name = prompt("Save this map as:", defaultName);
     if (name === null) {
-      // User cancelled the save prompt -- still show it on the map for
-      // this session, just don't persist it.
       loadCsvText(csvText);
       return;
     }
@@ -731,15 +851,17 @@ document.getElementById("csv-file").addEventListener("change", (event) => {
   };
   reader.readAsText(file);
 });
-
-renderSavedMapsList();
 </script>
 
 <!--
-  IMPORTANT: replace YOUR_API_KEY_HERE below with a real Google Maps
-  JavaScript API key before this will work. See the notes in the
-  message alongside this file for how to get one.
+  SETUP REQUIRED (two separate services, both free tier):
+  1. Google Maps JavaScript API key -- replace YOUR_API_KEY_HERE below.
+  2. Firebase project config -- replace FIREBASE_CONFIG above, and
+     enable Email/Password auth + Firestore in your Firebase project.
 -->
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script async
   src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDo923spAiu-UxoU10lLO1RH35WJFs_Bzc&libraries=geometry&callback=initMap">
 </script>
