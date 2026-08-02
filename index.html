@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Region / Area / County Map Viewer</title>
+<style>
+  html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, sans-serif; }
+  #layout { display: flex; height: 100%; position: relative; }
+  #sidebar {
+    width: 300px; flex-shrink: 0; background: #1e2a38; color: #eef2f7;
+    padding: 16px; overflow-y: auto; box-sizing: border-box;
+  }
+  #sidebar h1 { font-size: 18px; margin: 0 0 4px; }
+  #sidebar p.hint { font-size: 12px; color: #9fb0c3; margin: 0 0 16px; }
+  #csv-input-row { margin-bottom: 16px; }
+  #csv-file { width: 100%; font-size: 13px; color: #eef2f7; }
+  #status { font-size: 13px; color: #9fb0c3; margin-bottom: 16px; min-height: 18px; }
+  .region-block { margin-bottom: 14px; }
+  .region-title {
+    font-weight: 600; font-size: 14px; margin-bottom: 6px; cursor: pointer;
+    padding: 3px 4px; border-radius: 4px;
+  }
+  .region-title:hover { background: rgba(255,255,255,0.08); }
+  .region-title.active { background: rgba(255,255,255,0.18); color: #ffffff; }
+  .area-row {
+    display: flex; align-items: center; gap: 8px; font-size: 13px;
+    padding: 3px 4px; cursor: pointer; border-radius: 4px;
+  }
+  .area-row:hover { color: #ffffff; background: rgba(255,255,255,0.08); }
+  .area-row.active { background: rgba(255,255,255,0.18); color: #ffffff; font-weight: 600; }
+  .swatch { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.3); }
+  #clear-selection-row { margin-bottom: 12px; }
+  #clear-selection-btn {
+    font-size: 12px; background: #33495f; color: #eef2f7; border: none;
+    padding: 5px 10px; border-radius: 4px; cursor: pointer; display: none;
+  }
+  #clear-selection-btn:hover { background: #405a74; }
+  #auth-section { margin-bottom: 16px; border-bottom: 1px solid #33495f; padding-bottom: 14px; }
+  #auth-logged-out input {
+    width: 100%; box-sizing: border-box; margin-bottom: 6px; padding: 7px 8px;
+    border-radius: 4px; border: 1px solid #33495f; background: #16202b;
+    color: #eef2f7; font-size: 13px;
+  }
+  #auth-buttons-row { display: flex; gap: 6px; margin-bottom: 6px; }
+  #auth-buttons-row button {
+    flex: 1; font-size: 12px; background: #33495f; color: #eef2f7; border: none;
+    padding: 7px 6px; border-radius: 4px; cursor: pointer;
+  }
+  #auth-buttons-row button:hover { background: #405a74; }
+  #auth-error { font-size: 12px; color: #ff6b6b; min-height: 16px; }
+  #auth-logged-in { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  #auth-user-email { font-size: 12px; color: #cfdcea; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #auth-logout-btn {
+    font-size: 12px; background: #33495f; color: #eef2f7; border: none;
+    padding: 6px 10px; border-radius: 4px; cursor: pointer; flex-shrink: 0;
+  }
+  #auth-logout-btn:hover { background: #405a74; }
+  #saved-maps-section { margin: 14px 0; border-top: 1px solid #33495f; padding-top: 12px; }
+  #saved-maps-header { font-weight: 600; font-size: 13px; margin-bottom: 6px; color: #cfdcea; }
+  .saved-map-row {
+    display: flex; align-items: center; gap: 6px; font-size: 12px;
+    padding: 4px 4px; border-radius: 4px;
+  }
+  .saved-map-row:hover { background: rgba(255,255,255,0.06); }
+  .saved-map-row.active { background: rgba(255,255,255,0.16); }
+  .saved-map-name { flex: 1; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .saved-map-delete {
+    background: none; border: none; color: #9fb0c3; cursor: pointer;
+    font-size: 14px; padding: 0 4px;
+  }
+  .saved-map-delete:hover { color: #ff6b6b; }
+  #no-saved-maps { font-size: 12px; color: #6f8399; font-style: italic; }
+  #map { flex: 1; }
+  #info-window-content { font-size: 13px; }
+  #info-window-content b { display: block; margin-bottom: 2px; }
+
+  #sidebar-toggle-btn {
+    display: none; position: absolute; top: 12px; left: 12px; z-index: 20;
+    width: 44px; height: 44px; border-radius: 8px; border: none;
+    background: #1e2a38; color: #eef2f7; font-size: 20px; cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3); align-items: center; justify-content: center;
+  }
+  #sidebar-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 15;
+  }
+
+  /* Phone-sized screens: sidebar becomes a slide-in drawer over the
+     map instead of taking permanent horizontal space, and touch
+     targets get bigger. */
+  @media (max-width: 700px) {
+    #sidebar-toggle-btn { display: flex; }
+    #sidebar {
+      position: fixed; top: 0; left: 0; bottom: 0; z-index: 20;
+      width: 85vw; max-width: 340px;
+      transform: translateX(-100%);
+      transition: transform 0.2s ease-out;
+      padding-top: 64px;
+    }
+    #sidebar.open { transform: translateX(0); }
+    #sidebar-overlay.open { display: block; }
+
+    #csv-file { padding: 8px 0; }
+    button, .area-row, .region-title, .saved-map-row {
+      min-height: 40px;
+    }
+    #my-location-btn { padding: 12px 10px !important; font-size: 14px !important; }
+    .area-row, .region-title { font-size: 15px !important; }
+    .saved-map-delete { font-size: 20px !important; padding: 4px 10px !important; }
+  }
+</style>
+</head>
+<body>
+<div id="layout">
+  <button id="sidebar-toggle-btn" aria-label="Toggle menu">&#9776;</button>
+  <div id="sidebar-overlay"></div>
+  <div id="sidebar">
+    <h1>Region / Area / County Map</h1>
+    <p class="hint">Load a CSV, then click a region or area below to highlight and zoom to it on the map.</p>
+
+    <div id="auth-section">
+      <div id="auth-logged-out">
+        <input type="email" id="auth-email" placeholder="Email" autocomplete="email">
+        <input type="password" id="auth-password" placeholder="Password" autocomplete="current-password">
+        <div id="auth-buttons-row">
+          <button id="auth-login-btn">Log In</button>
+          <button id="auth-signup-btn">Sign Up</button>
+        </div>
+        <div id="auth-error"></div>
+      </div>
+      <div id="auth-logged-in" style="display:none;">
+        <div id="auth-user-email"></div>
+        <button id="auth-logout-btn">Log Out</button>
+      </div>
+    </div>
+
+    <div id="csv-input-row">
+      <input type="file" id="csv-file" accept=".csv">
+    </div>
+    <div id="status">No CSV loaded yet.</div>
+
+    <div id="saved-maps-section">
+      <div id="saved-maps-header">Saved Maps</div>
+      <div id="saved-maps-list"></div>
+    </div>
+
+    <div id="clear-selection-row">
+      <button id="clear-selection-btn">Show all (clear selection)</button>
+    </div>
+    <div id="marker-toggle-row" style="font-size: 13px; margin-bottom: 12px;">
+      <label>
+        <input type="checkbox" id="marker-toggle" checked>
+        Show repeater locations (needs GPS data in the CSV)
+      </label>
+    </div>
+    <div id="my-location-row" style="margin-bottom: 12px;">
+      <button id="my-location-btn" style="font-size: 12px; background: #33495f; color: #eef2f7; border: none; padding: 6px 10px; border-radius: 4px; cursor: pointer; width: 100%;">
+        Find My Location
+      </button>
+      <div id="my-location-status" style="font-size: 12px; color: #9fb0c3; margin-top: 4px;"></div>
+    </div>
+    <div id="region-list"></div>
+  </div>
+  <div id="map"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script>
+// ---------------------------------------------------------------------
+// FIPS state-code -> two-letter abbreviation, used to match the public
+// county-boundaries GeoJSON (which identifies counties by FIPS codes)
+// against your CSV's plain "state" column (e.g. "AL", "TN").
+// ---------------------------------------------------------------------
+const FIPS_TO_STATE = {
+  "01":"AL","02":"AK","04":"AZ","05":"AR","06":"CA","08":"CO","09":"CT",
+  "10":"DE","11":"DC","12":"FL","13":"GA","15":"HI","16":"ID","17":"IL",
+  "18":"IN","19":"IA","20":"KS","21":"KY","22":"LA","23":"ME","24":"MD",
+  "25":"MA","26":"MI","27":"MN","28":"MS","29":"MO","30":"MT","31":"NE",
+  "32":"NV","33":"NH","34":"NJ","35":"NM","36":"NY","37":"NC","38":"ND",
+  "39":"OH","40":"OK","41":"OR","42":"PA","44":"RI","45":"SC","46":"SD",
+  "47":"TN","48":"TX","49":"UT","50":"VT","51":"VA","53":"WA","54":"WV",
+  "55":"WI","56":"WY","72":"PR"
+};
+
+const COUNTIES_GEOJSON_URL =
+  "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json";
+
+// Normalizes a county name for matching: lowercase, strip "county"/
+// "parish"/"borough" suffixes and punctuation, trim whitespace.
+function normalizeCountyName(name) {
+  return (name || "")
+    .toLowerCase()
+    .replace(/\bcounty\b/g, "")
+    .replace(/\bparish\b/g, "")
+    .replace(/\bborough\b/g, "")
+    .replace(/[^a-z ]/g, "")
+    .trim();
+}
+
+function matchKey(countyName, stateAbbr) {
+  return normalizeCountyName(countyName) + "|" + (stateAbbr || "").toUpperCase().trim();
+}
+
+let map;
+let countiesLayer;
+// key: "normalizedcounty|ST" -> { area, region, color }
+let csvLookup = {};
+// region -> { area -> color }
+let regionAreaColors = {};
+// { type: "region"|"area", name: string } or null for no selection
+let selection = null;
+let repeaterMarkers = [];
+let showMarkers = true;
+
+function initMap() {
+  map = new google.maps.Map(document.getElementById("map"), {
+    center: { lat: 37.8, lng: -96 },
+    zoom: 5,
+    mapTypeControl: false,
+    streetViewControl: false,
+  });
+
+  countiesLayer = new google.maps.Data({ map });
+  countiesLayer.loadGeoJson(COUNTIES_GEOJSON_URL, null, () => {
+    applyStyling();
+  });
+
+  countiesLayer.addListener("click", (event) => {
+    showInfoForFeature(event);
+  });
+}
+
+function featureStyle(feature) {
+  const stateFips = feature.getProperty("STATE");
+  const countyName = feature.getProperty("NAME");
+  const stateAbbr = FIPS_TO_STATE[stateFips];
+  const key = matchKey(countyName, stateAbbr);
+  const match = csvLookup[key];
+
+  if (!match) {
+    return {
+      fillColor: "#cccccc",
+      fillOpacity: 0.0,
+      strokeColor: "#999999",
+      strokeWeight: 0.3,
+      clickable: false,
+    };
+  }
+
+  const isSelected = !selection ||
+    (selection.type === "region" && match.region === selection.name) ||
+    (selection.type === "area" && match.area === selection.name);
+
+  if (selection && !isSelected) {
+    // Something is selected and this county isn't part of it: fade out
+    // rather than hide entirely, so there's still geographic context.
+    return {
+      fillColor: match.color,
+      fillOpacity: 0.08,
+      strokeColor: match.color,
+      strokeWeight: 0.5,
+      clickable: true,
+    };
+  }
+
+  return {
+    fillColor: match.color,
+    fillOpacity: selection ? 0.75 : 0.55,
+    strokeColor: match.color,
+    strokeWeight: selection ? 2 : 1,
+    clickable: true,
+  };
+}
+
+function applyStyling() {
+  if (!countiesLayer) return;
+  countiesLayer.forEach((feature) => {
+    countiesLayer.overrideStyle(feature, featureStyle(feature));
+  });
+}
+
+let lastRepeaterPoints = [];
+
+function renderRepeaterMarkers(points) {
+  if (points) lastRepeaterPoints = points;
+
+  for (const marker of repeaterMarkers) marker.setMap(null);
+  repeaterMarkers = [];
+
+  if (!showMarkers) return;
+
+  for (const point of lastRepeaterPoints) {
+    if (selection) {
+      const matches = (selection.type === "region" && point.region === selection.name) ||
+        (selection.type === "area" && point.area === selection.name);
+      if (!matches) continue;
+    }
+
+    const marker = new google.maps.Marker({
+      position: { lat: point.lat, lng: point.lon },
+      map,
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 5,
+        fillColor: point.color,
+        fillOpacity: 0.9,
+        strokeColor: "#1e2a38",
+        strokeWeight: 1,
+      },
+      title: (point.name || "Repeater") + " -- " + point.freq + " MHz",
+    });
+
+    const infoWindow = new google.maps.InfoWindow({
+      content: '<div id="info-window-content"><b>' + (point.name || "Repeater") + "</b>" +
+        point.freq + " MHz<br>Area: " + point.area + "<br>Region: " + point.region + "</div>",
+    });
+    marker.addListener("click", () => infoWindow.open(map, marker));
+
+    repeaterMarkers.push(marker);
+  }
+}
+
+// ---------------------------------------------------------------------
+// "Find My Location": uses the browser's geolocation, drops a marker,
+// then figures out which county that point falls inside of (via
+// point-in-polygon testing against the loaded county boundaries) and
+// auto-selects/highlights that county's area on the map -- same
+// highlight behavior as clicking an area in the sidebar.
+// ---------------------------------------------------------------------
+let myLocationMarker = null;
+
+function polygonRingContainsPoint(dataPolygon, point) {
+  // dataPolygon is a google.maps.Data.Polygon: getArray() -> LinearRing[].
+  // Only the outer ring is checked (ring 0) -- county boundaries in this
+  // dataset don't have holes, so inner rings aren't relevant here.
+  const rings = dataPolygon.getArray();
+  if (!rings.length) return false;
+  const outerRingPath = rings[0].getArray();
+  const tempPolygon = new google.maps.Polygon({ paths: outerRingPath });
+  return google.maps.geometry.poly.containsLocation(point, tempPolygon);
+}
+
+function geometryContainsPoint(geometry, point) {
+  const type = geometry.getType();
+  if (type === "Polygon") {
+    return polygonRingContainsPoint(geometry, point);
+  }
+  if (type === "MultiPolygon") {
+    let contains = false;
+    geometry.getArray().forEach((poly) => {
+      if (!contains && polygonRingContainsPoint(poly, point)) contains = true;
+    });
+    return contains;
+  }
+  return false;
+}
+
+function findCountyKeyAtPoint(latLng) {
+  let foundKey = null;
+  countiesLayer.forEach((feature) => {
+    if (foundKey) return;
+    if (geometryContainsPoint(feature.getGeometry(), latLng)) {
+      const stateFips = feature.getProperty("STATE");
+      const countyName = feature.getProperty("NAME");
+      const stateAbbr = FIPS_TO_STATE[stateFips];
+      foundKey = { key: matchKey(countyName, stateAbbr), countyName, stateAbbr };
+    }
+  });
+  return foundKey;
+}
+
+function findMyLocation() {
+  const statusEl = document.getElementById("my-location-status");
+  if (!navigator.geolocation) {
+    statusEl.textContent = "Geolocation isn't supported in this browser.";
+    return;
+  }
+  statusEl.textContent = "Finding your location...";
+
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      const latLng = new google.maps.LatLng(
+        position.coords.latitude, position.coords.longitude);
+
+      if (myLocationMarker) myLocationMarker.setMap(null);
+      myLocationMarker = new google.maps.Marker({
+        position: latLng,
+        map,
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 8,
+          fillColor: "#ff3b30",
+          fillOpacity: 1,
+          strokeColor: "#ffffff",
+          strokeWeight: 2,
+        },
+        title: "You are here",
+        zIndex: 999,
+      });
+
+      map.panTo(latLng);
+      map.setZoom(10);
+
+      if (!countiesLayer) {
+        statusEl.textContent = "County boundaries haven't finished loading yet -- try again in a moment.";
+        return;
+      }
+
+      const found = findCountyKeyAtPoint(latLng);
+      if (!found) {
+        statusEl.textContent = "Located you, but couldn't match this to a loaded county boundary.";
+        return;
+      }
+
+      const match = csvLookup[found.key];
+      if (!match) {
+        statusEl.textContent = "You're in " + found.countyName + " County, " + found.stateAbbr +
+          " -- not part of any loaded area.";
+        return;
+      }
+
+      statusEl.textContent = "You're in " + found.countyName + " County, " + found.stateAbbr +
+        " -- Area: " + match.area + ", Region: " + match.region;
+      selectArea(match.area);
+    },
+    (error) => {
+      statusEl.textContent = "Couldn't get your location (" + error.message + ").";
+    },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+}
+
+document.getElementById("my-location-btn").addEventListener("click", findMyLocation);
+
+// Mobile drawer sidebar: hamburger button opens it, tapping the dark
+// overlay behind it closes it again. On wider screens the sidebar is
+// always visible and this button stays hidden via CSS, so none of this
+// matters there.
+function openSidebar() {
+  document.getElementById("sidebar").classList.add("open");
+  document.getElementById("sidebar-overlay").classList.add("open");
+}
+function closeSidebar() {
+  document.getElementById("sidebar").classList.remove("open");
+  document.getElementById("sidebar-overlay").classList.remove("open");
+}
+document.getElementById("sidebar-toggle-btn").addEventListener("click", openSidebar);
+document.getElementById("sidebar-overlay").addEventListener("click", closeSidebar);
+
+function showInfoForFeature(event) {
+  const stateFips = event.feature.getProperty("STATE");
+  const countyName = event.feature.getProperty("NAME");
+  const stateAbbr = FIPS_TO_STATE[stateFips];
+  const key = matchKey(countyName, stateAbbr);
+  const match = csvLookup[key];
+  if (!match) return;
+
+  const infoWindow = new google.maps.InfoWindow({
+    content:
+      '<div id="info-window-content"><b>' + countyName + " County, " + stateAbbr + "</b>" +
+      "Area: " + match.area + "<br>" +
+      "Region: " + match.region + "</div>",
+    position: event.latLng,
+  });
+  infoWindow.open(map);
+}
+
+// Extracts "Cullman" and "AL" out of a CHIRP Comment field formatted as
+// "SomeLocation / Cullman County, AL" (exactly how region_picker.py's
+// CSV export writes it).
+function parseCountyStateFromComment(comment) {
+  const match = /\/\s*(.+?)\s+County,\s*([A-Za-z]{2})\s*$/.exec(comment || "");
+  if (!match) return null;
+  return { county: match[1].trim(), state: match[2].trim() };
+}
+
+function loadCsvText(text) {
+  const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+  csvLookup = {};
+  regionAreaColors = {};
+
+  // Two supported formats:
+  // 1. Simple: county,state,area,region,color (one row per county)
+  // 2. Combined CHIRP export: has Area/Region/Color columns plus a
+  //    Comment column embedding "... / County Name County, ST" (one row
+  //    per repeater channel -- county/area/region repeat across rows,
+  //    so we dedupe naturally by overwriting the same lookup key).
+  //    May also have Lat/Lon columns (only populated when "Fetch exact
+  //    offset splits" was used in region_picker.py, since that's the
+  //    same detail-page fetch GPS coordinates piggyback on) -- when
+  //    present, individual repeater markers get plotted too.
+  const fields = parsed.meta.fields || [];
+  const isChirpFormat = fields.includes("Area") && fields.includes("Region")
+    && fields.includes("Color") && fields.includes("Comment");
+  const hasCoordinates = fields.includes("Lat") && fields.includes("Lon");
+
+  let rowCount = 0;
+  let matchedCounties = new Set();
+  const repeaterPoints = [];
+
+  for (const row of parsed.data) {
+    let county, state, area, region, color;
+
+    if (isChirpFormat) {
+      const parsedLoc = parseCountyStateFromComment(row.Comment);
+      if (!parsedLoc) continue;
+      county = parsedLoc.county;
+      state = parsedLoc.state;
+      area = (row.Area || "").trim();
+      region = (row.Region || "").trim();
+      color = (row.Color || "#4287f5").trim();
+    } else {
+      county = (row.county || "").trim();
+      state = (row.state || "").trim();
+      area = (row.area || "").trim();
+      region = (row.region || "").trim();
+      color = (row.color || "#4287f5").trim();
+    }
+
+    if (!county || !state || !area) continue;
+
+    const key = matchKey(county, state);
+    csvLookup[key] = { area, region, color };
+    matchedCounties.add(key);
+
+    if (!regionAreaColors[region]) regionAreaColors[region] = {};
+    regionAreaColors[region][area] = color;
+    rowCount++;
+
+    if (hasCoordinates) {
+      const lat = parseFloat(row.Lat);
+      const lon = parseFloat(row.Lon);
+      if (!isNaN(lat) && !isNaN(lon) && lat !== 0 && lon !== 0) {
+        repeaterPoints.push({
+          lat, lon, area, region, color,
+          name: row.Name || "",
+          freq: row.Frequency || "",
+        });
+      }
+    }
+  }
+
+  console.log("CSV format detected:", isChirpFormat ? "combined CHIRP export" : "simple");
+  console.log("Unique counties matched:", matchedCounties.size, "from", rowCount, "rows");
+  console.log("Sample lookup keys:", Object.keys(csvLookup).slice(0, 5));
+  console.log("Repeater markers with valid coordinates:", repeaterPoints.length);
+
+  let statusText = matchedCounties.size + " unique counties loaded from " + rowCount +
+    " row(s), across " + Object.keys(regionAreaColors).length + " region(s).";
+  if (hasCoordinates) {
+    statusText += " " + repeaterPoints.length + " repeater location(s) with GPS data.";
+  }
+  document.getElementById("status").textContent = statusText;
+
+  renderSidebarList();
+  applyStyling();
+  renderRepeaterMarkers(repeaterPoints);
+}
+
+function renderSidebarList() {
+  const container = document.getElementById("region-list");
+  container.innerHTML = "";
+
+  for (const region of Object.keys(regionAreaColors).sort()) {
+    const block = document.createElement("div");
+    block.className = "region-block";
+
+    const title = document.createElement("div");
+    title.className = "region-title";
+    if (selection && selection.type === "region" && selection.name === region) {
+      title.classList.add("active");
+    }
+    title.textContent = region;
+    title.addEventListener("click", () => selectRegion(region));
+    block.appendChild(title);
+
+    const areas = regionAreaColors[region];
+    for (const area of Object.keys(areas).sort()) {
+      const row = document.createElement("div");
+      row.className = "area-row";
+      if (selection && selection.type === "area" && selection.name === area) {
+        row.classList.add("active");
+      }
+
+      const swatch = document.createElement("div");
+      swatch.className = "swatch";
+      swatch.style.background = areas[area];
+      row.appendChild(swatch);
+
+      const label = document.createElement("span");
+      label.textContent = area;
+      row.appendChild(label);
+
+      row.addEventListener("click", () => selectArea(area));
+      block.appendChild(row);
+    }
+    container.appendChild(block);
+  }
+}
+
+function countyKeysForSelection(sel) {
+  const keys = [];
+  for (const key in csvLookup) {
+    const match = csvLookup[key];
+    if (sel.type === "region" && match.region === sel.name) keys.push(key);
+    if (sel.type === "area" && match.area === sel.name) keys.push(key);
+  }
+  return keys;
+}
+
+function fitBoundsToSelection(sel) {
+  if (!countiesLayer) return;
+  const keys = new Set(countyKeysForSelection(sel));
+  if (!keys.size) return;
+
+  const bounds = new google.maps.LatLngBounds();
+  let found = false;
+  countiesLayer.forEach((feature) => {
+    const stateFips = feature.getProperty("STATE");
+    const countyName = feature.getProperty("NAME");
+    const stateAbbr = FIPS_TO_STATE[stateFips];
+    const key = matchKey(countyName, stateAbbr);
+    if (!keys.has(key)) return;
+    found = true;
+    feature.getGeometry().forEachLatLng((latLng) => bounds.extend(latLng));
+  });
+  if (found) map.fitBounds(bounds);
+}
+
+function selectRegion(name) {
+  selection = { type: "region", name };
+  applyStyling();
+  renderSidebarList();
+  fitBoundsToSelection(selection);
+  renderRepeaterMarkers();
+  document.getElementById("clear-selection-btn").style.display = "inline-block";
+  if (window.innerWidth <= 700) closeSidebar();
+}
+
+function selectArea(name) {
+  selection = { type: "area", name };
+  applyStyling();
+  renderSidebarList();
+  fitBoundsToSelection(selection);
+  renderRepeaterMarkers();
+  document.getElementById("clear-selection-btn").style.display = "inline-block";
+  if (window.innerWidth <= 700) closeSidebar();
+}
+
+function clearSelection() {
+  selection = null;
+  applyStyling();
+  renderSidebarList();
+  renderRepeaterMarkers();
+  document.getElementById("clear-selection-btn").style.display = "none";
+}
+
+document.getElementById("clear-selection-btn").addEventListener("click", clearSelection);
+
+document.getElementById("marker-toggle").addEventListener("change", (event) => {
+  showMarkers = event.target.checked;
+  renderRepeaterMarkers();
+});
+
+// ---------------------------------------------------------------------
+// Accounts + Saved Maps: real multi-user accounts via Firebase
+// Authentication, with each user's saved CSV datasets stored in
+// Firestore under their own account -- separate from anyone else's,
+// and available on any device once logged in (unlike the old
+// localStorage-only version, which was tied to one browser).
+//
+// SETUP REQUIRED: replace FIREBASE_CONFIG below with your own Firebase
+// project's config (Firebase Console -> Project Settings -> your web
+// app -> SDK setup and configuration). You'll also need to enable
+// Email/Password sign-in under Authentication -> Sign-in method, and
+// create a Firestore database (Build -> Firestore Database -> Create).
+// ---------------------------------------------------------------------
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyDWBndr3H7XgfW3EWX_s4r4q3MBUc98s3A",
+  authDomain: "ham-area-tracker.firebaseapp.com",
+  projectId: "ham-area-tracker",
+  storageBucket: "ham-area-tracker.firebasestorage.app",
+  messagingSenderId: "473683457601",
+  appId: "1:473683457601:web:3240ee527b1511def6b8c0",
+  measurementId: "G-RZ3847JLMN",
+};
+
+firebase.initializeApp(FIREBASE_CONFIG);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+let currentUser = null;
+let activeMapName = null;
+
+function showAuthError(message) {
+  document.getElementById("auth-error").textContent = message || "";
+}
+
+document.getElementById("auth-signup-btn").addEventListener("click", () => {
+  const email = document.getElementById("auth-email").value.trim();
+  const password = document.getElementById("auth-password").value;
+  showAuthError("");
+  if (!email || !password) {
+    showAuthError("Enter an email and password first.");
+    return;
+  }
+  auth.createUserWithEmailAndPassword(email, password)
+    .catch((error) => showAuthError(error.message));
+});
+
+document.getElementById("auth-login-btn").addEventListener("click", () => {
+  const email = document.getElementById("auth-email").value.trim();
+  const password = document.getElementById("auth-password").value;
+  showAuthError("");
+  if (!email || !password) {
+    showAuthError("Enter an email and password first.");
+    return;
+  }
+  auth.signInWithEmailAndPassword(email, password)
+    .catch((error) => showAuthError(error.message));
+});
+
+document.getElementById("auth-logout-btn").addEventListener("click", () => {
+  auth.signOut();
+});
+
+auth.onAuthStateChanged((user) => {
+  currentUser = user;
+  const loggedOutEl = document.getElementById("auth-logged-out");
+  const loggedInEl = document.getElementById("auth-logged-in");
+
+  if (user) {
+    loggedOutEl.style.display = "none";
+    loggedInEl.style.display = "flex";
+    document.getElementById("auth-user-email").textContent = user.email;
+    document.getElementById("auth-user-email").title = user.email;
+    showAuthError("");
+    document.getElementById("auth-password").value = "";
+  } else {
+    loggedOutEl.style.display = "block";
+    loggedInEl.style.display = "none";
+  }
+
+  activeMapName = null;
+  renderSavedMapsList();
+});
+
+function savedMapsCollection() {
+  return db.collection("users").doc(currentUser.uid).collection("savedMaps");
+}
+
+async function saveCurrentMap(name, csvText) {
+  if (!currentUser) {
+    alert("Log in or sign up first to save maps to your account.");
+    return;
+  }
+  await savedMapsCollection().doc(name).set({
+    csvText,
+    savedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+  activeMapName = name;
+  renderSavedMapsList();
+}
+
+async function loadSavedMap(name) {
+  if (!currentUser) return;
+  const doc = await savedMapsCollection().doc(name).get();
+  if (!doc.exists) return;
+  activeMapName = name;
+  loadCsvText(doc.data().csvText);
+  renderSavedMapsList();
+}
+
+async function deleteSavedMap(name) {
+  if (!currentUser) return;
+  if (!confirm("Delete saved map \"" + name + "\"? This can't be undone.")) return;
+  await savedMapsCollection().doc(name).delete();
+  if (activeMapName === name) activeMapName = null;
+  renderSavedMapsList();
+}
+
+async function renderSavedMapsList() {
+  const container = document.getElementById("saved-maps-list");
+  container.innerHTML = "";
+
+  if (!currentUser) {
+    const empty = document.createElement("div");
+    empty.id = "no-saved-maps";
+    empty.textContent = "Log in to save and load maps tied to your account.";
+    container.appendChild(empty);
+    return;
+  }
+
+  const snapshot = await savedMapsCollection().orderBy("savedAt", "desc").get();
+  if (snapshot.empty) {
+    const empty = document.createElement("div");
+    empty.id = "no-saved-maps";
+    empty.textContent = "No saved maps yet -- load a CSV to save one.";
+    container.appendChild(empty);
+    return;
+  }
+
+  snapshot.forEach((doc) => {
+    const name = doc.id;
+    const data = doc.data();
+    const row = document.createElement("div");
+    row.className = "saved-map-row" + (name === activeMapName ? " active" : "");
+
+    const label = document.createElement("span");
+    label.className = "saved-map-name";
+    label.textContent = name;
+    if (data.savedAt) {
+      label.title = "Saved " + data.savedAt.toDate().toLocaleString();
+    }
+    label.addEventListener("click", () => loadSavedMap(name));
+    row.appendChild(label);
+
+    const del = document.createElement("button");
+    del.className = "saved-map-delete";
+    del.textContent = "\u00d7";
+    del.title = "Delete this saved map";
+    del.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      deleteSavedMap(name);
+    });
+    row.appendChild(del);
+
+    container.appendChild(row);
+  });
+}
+
+document.getElementById("csv-file").addEventListener("change", (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const csvText = e.target.result;
+    const defaultName = file.name.replace(/\.csv$/i, "");
+    if (!currentUser) {
+      // Not logged in -- still show it on the map for this session,
+      // just can't persist it to an account.
+      loadCsvText(csvText);
+      return;
+    }
+    const name = prompt("Save this map as:", defaultName);
+    if (name === null) {
+      loadCsvText(csvText);
+      return;
+    }
+    saveCurrentMap(name.trim() || defaultName, csvText);
+    loadCsvText(csvText);
+  };
+  reader.readAsText(file);
+});
+</script>
+
+<!--
+  SETUP REQUIRED (two separate services, both free tier):
+  1. Google Maps JavaScript API key -- replace YOUR_API_KEY_HERE below.
+  2. Firebase project config -- replace FIREBASE_CONFIG above, and
+     enable Email/Password auth + Firestore in your Firebase project.
+-->
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script async
+  src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDo923spAiu-UxoU10lLO1RH35WJFs_Bzc&libraries=geometry&callback=initMap">
+</script>
+</body>
+</html>
