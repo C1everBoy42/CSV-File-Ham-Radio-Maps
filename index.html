@@ -24,8 +24,11 @@
   .region-header:hover { background: rgba(255,255,255,0.08); }
   .region-header.active { background: rgba(255,255,255,0.18); color: #ffffff; }
   .region-arrow {
-    width: 12px; flex-shrink: 0; font-size: 10px; color: #9fb0c3;
-    transition: transform 0.15s ease; text-align: center;
+    width: 0; height: 0; flex-shrink: 0; margin: 0 2px;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #9fb0c3;
+    transition: transform 0.15s ease;
   }
   .region-arrow.collapsed { transform: rotate(-90deg); }
   .region-title { font-weight: 600; font-size: 14px; flex: 1; }
@@ -146,6 +149,7 @@
       <input type="file" id="csv-file" accept=".csv" multiple>
     </div>
     <div id="status">No CSV loaded yet.</div>
+    <div id="sync-error-status" style="font-size: 12px; color: #ff6b6b; margin-bottom: 8px;"></div>
     <div id="loaded-sources-section" style="margin-bottom: 16px;">
       <div id="loaded-sources-list"></div>
       <button id="clear-loaded-sources-btn" style="display:none; font-size: 12px; background: #33495f; color: #eef2f7; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; margin-top: 4px;">Clear all loaded files</button>
@@ -914,6 +918,26 @@ function rebuildFromSources() {
   renderRepeaterMarkers(allRepeaterPoints);
 }
 
+// Firestore write/read failures for the account-sync features (both
+// currentSources and the explicit Saved Maps) used to only go to
+// console.warn -- invisible unless someone had devtools open. The most
+// common real-world cause is Firestore Security Rules that don't (yet)
+// permit the path being written to, which fails silently from the
+// person's point of view otherwise. Surfacing it on-page turns "maps
+// aren't saving, I have no idea why" into an actual, readable error.
+function showSyncError(action, e) {
+  console.warn(action, e);
+  const el = document.getElementById("sync-error-status");
+  if (!el) return;
+  const detail = (e && e.message) ? e.message : String(e);
+  el.textContent = action + ": " + detail;
+}
+
+function clearSyncError() {
+  const el = document.getElementById("sync-error-status");
+  if (el) el.textContent = "";
+}
+
 // Adds one more CSV to the map alongside whatever's already loaded. name
 // is just a display label (file name, or saved-map name) -- duplicates
 // by name are allowed (e.g. re-picking the same file), each gets its own
@@ -936,10 +960,11 @@ function addCsvSource(text, name) {
     }).then((docRef) => {
       source.id = docRef.id;
       source.synced = true;
+      clearSyncError();
       renderLoadedSourcesList();  // refresh so its remove button's closure
                                    // uses the new (Firestore doc) id
     }).catch((e) => {
-      console.warn("Could not sync loaded file to your account:", e);
+      showSyncError("Couldn't sync '" + name + "' to your account", e);
     });
   }
 }
@@ -950,8 +975,10 @@ function removeCsvSource(id) {
   rebuildFromSources();
 
   if (currentUser && source && source.synced) {
-    currentSourcesCollection().doc(id).delete().catch((e) => {
-      console.warn("Could not remove synced file from your account:", e);
+    currentSourcesCollection().doc(id).delete().then(() => {
+      clearSyncError();
+    }).catch((e) => {
+      showSyncError("Couldn't remove '" + source.name + "' from your account", e);
     });
   }
 }
@@ -964,8 +991,10 @@ function clearAllCsvSources() {
   if (currentUser && toDelete.length) {
     const batch = db.batch();
     toDelete.forEach((s) => batch.delete(currentSourcesCollection().doc(s.id)));
-    batch.commit().catch((e) => {
-      console.warn("Could not clear synced files from your account:", e);
+    batch.commit().then(() => {
+      clearSyncError();
+    }).catch((e) => {
+      showSyncError("Couldn't clear your account's loaded files", e);
     });
   }
 }
@@ -1043,7 +1072,6 @@ function renderSidebarList() {
 
     const arrow = document.createElement("span");
     arrow.className = "region-arrow" + (isCollapsed ? " collapsed" : "");
-    arrow.textContent = "\u25bc";  // rotated via CSS when collapsed, so this one glyph covers both states
     header.appendChild(arrow);
 
     const title = document.createElement("span");
@@ -1269,7 +1297,7 @@ async function syncLocalSourcesToAccountAndLoad() {
       s.id = docRef.id;
       s.synced = true;
     } catch (e) {
-      console.warn("Could not sync a locally loaded file to your account:", e);
+      showSyncError("Couldn't sync '" + s.name + "' to your account", e);
     }
   }
 
@@ -1278,8 +1306,9 @@ async function syncLocalSourcesToAccountAndLoad() {
     loadedSources = snapshot.docs.map((doc) => ({
       id: doc.id, name: doc.data().name, text: doc.data().text, synced: true,
     }));
+    clearSyncError();
   } catch (e) {
-    console.warn("Could not load your account's current map data:", e);
+    showSyncError("Couldn't load your account's saved map data", e);
   }
   rebuildFromSources();
   renderSavedMapsList();  // refreshes "active" highlighting now that
@@ -1299,25 +1328,40 @@ async function saveCurrentMap(name, csvText) {
     alert("Log in or sign up first to save maps to your account.");
     return;
   }
-  await savedMapsCollection().doc(name).set({
-    csvText,
-    savedAt: firebase.firestore.FieldValue.serverTimestamp(),
-  });
+  try {
+    await savedMapsCollection().doc(name).set({
+      csvText,
+      savedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    clearSyncError();
+  } catch (e) {
+    showSyncError("Couldn't save '" + name + "' to your account", e);
+  }
   renderSavedMapsList();
 }
 
 async function loadSavedMap(name) {
   if (!currentUser) return;
-  const doc = await savedMapsCollection().doc(name).get();
-  if (!doc.exists) return;
-  addCsvSource(doc.data().csvText, name);
+  try {
+    const doc = await savedMapsCollection().doc(name).get();
+    if (!doc.exists) return;
+    addCsvSource(doc.data().csvText, name);
+    clearSyncError();
+  } catch (e) {
+    showSyncError("Couldn't load '" + name + "' from your account", e);
+  }
   renderSavedMapsList();
 }
 
 async function deleteSavedMap(name) {
   if (!currentUser) return;
   if (!confirm("Delete saved map \"" + name + "\"? This can't be undone.")) return;
-  await savedMapsCollection().doc(name).delete();
+  try {
+    await savedMapsCollection().doc(name).delete();
+    clearSyncError();
+  } catch (e) {
+    showSyncError("Couldn't delete '" + name + "' from your account", e);
+  }
   renderSavedMapsList();
 }
 
@@ -1333,7 +1377,18 @@ async function renderSavedMapsList() {
     return;
   }
 
-  const snapshot = await savedMapsCollection().orderBy("savedAt", "desc").get();
+  let snapshot;
+  try {
+    snapshot = await savedMapsCollection().orderBy("savedAt", "desc").get();
+    clearSyncError();
+  } catch (e) {
+    showSyncError("Couldn't load your saved maps list", e);
+    const errEl = document.createElement("div");
+    errEl.id = "no-saved-maps";
+    errEl.textContent = "Couldn't load saved maps -- see error above.";
+    container.appendChild(errEl);
+    return;
+  }
   if (snapshot.empty) {
     const empty = document.createElement("div");
     empty.id = "no-saved-maps";
