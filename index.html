@@ -17,12 +17,20 @@
   #csv-file { width: 100%; font-size: 13px; color: #eef2f7; }
   #status { font-size: 13px; color: #9fb0c3; margin-bottom: 16px; min-height: 18px; }
   .region-block { margin-bottom: 14px; }
-  .region-title {
-    font-weight: 600; font-size: 14px; margin-bottom: 6px; cursor: pointer;
-    padding: 3px 4px; border-radius: 4px;
+  .region-header {
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+    padding: 3px 4px; border-radius: 4px; margin-bottom: 4px;
   }
-  .region-title:hover { background: rgba(255,255,255,0.08); }
-  .region-title.active { background: rgba(255,255,255,0.18); color: #ffffff; }
+  .region-header:hover { background: rgba(255,255,255,0.08); }
+  .region-header.active { background: rgba(255,255,255,0.18); color: #ffffff; }
+  .region-arrow {
+    width: 12px; flex-shrink: 0; font-size: 10px; color: #9fb0c3;
+    transition: transform 0.15s ease; text-align: center;
+  }
+  .region-arrow.collapsed { transform: rotate(-90deg); }
+  .region-title { font-weight: 600; font-size: 14px; flex: 1; }
+  .region-areas { overflow: hidden; }
+  .region-areas.collapsed { display: none; }
   .area-row {
     display: flex; align-items: center; gap: 8px; font-size: 13px;
     padding: 3px 4px; cursor: pointer; border-radius: 4px;
@@ -101,7 +109,7 @@
     #sidebar-overlay.open { display: block; }
 
     #csv-file { padding: 8px 0; }
-    button, .area-row, .region-title, .saved-map-row {
+    button, .area-row, .region-header, .saved-map-row {
       min-height: 40px;
     }
     #my-location-btn { padding: 12px 10px !important; font-size: 14px !important; }
@@ -1004,6 +1012,21 @@ function loadCsvText(text, name) {
   rebuildFromSources();
 }
 
+// Which regions are collapsed in the sidebar -- persists across
+// renderSidebarList() calls (new CSV loads, selection changes, etc.) so
+// toggling a region open/shut doesn't get forgotten the next time
+// anything on the map changes and the list re-renders.
+let collapsedRegions = new Set();
+
+function toggleRegionCollapsed(region) {
+  if (collapsedRegions.has(region)) {
+    collapsedRegions.delete(region);
+  } else {
+    collapsedRegions.add(region);
+  }
+  renderSidebarList();
+}
+
 function renderSidebarList() {
   const container = document.getElementById("region-list");
   container.innerHTML = "";
@@ -1012,14 +1035,38 @@ function renderSidebarList() {
     const block = document.createElement("div");
     block.className = "region-block";
 
-    const title = document.createElement("div");
+    const isCollapsed = collapsedRegions.has(region);
+    const isRegionSelected = !!(selection && selection.type === "region" && selection.name === region);
+
+    const header = document.createElement("div");
+    header.className = "region-header" + (isRegionSelected ? " active" : "");
+
+    const arrow = document.createElement("span");
+    arrow.className = "region-arrow" + (isCollapsed ? " collapsed" : "");
+    arrow.textContent = "\u25bc";  // rotated via CSS when collapsed, so this one glyph covers both states
+    header.appendChild(arrow);
+
+    const title = document.createElement("span");
     title.className = "region-title";
-    if (selection && selection.type === "region" && selection.name === region) {
-      title.classList.add("active");
-    }
     title.textContent = region;
-    title.addEventListener("click", () => selectRegion(region));
-    block.appendChild(title);
+    header.appendChild(title);
+
+    // Clicking the arrow just expands/collapses the list of areas.
+    // Clicking the region name selects/zooms to the region on the map
+    // (existing behavior) AND expands it if it was collapsed -- seeing
+    // a region highlighted with its area list hidden would be confusing.
+    arrow.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      toggleRegionCollapsed(region);
+    });
+    title.addEventListener("click", () => {
+      collapsedRegions.delete(region);  // selecting it should reveal its areas
+      selectRegion(region);  // re-renders the sidebar itself
+    });
+    block.appendChild(header);
+
+    const areasContainer = document.createElement("div");
+    areasContainer.className = "region-areas" + (isCollapsed ? " collapsed" : "");
 
     const areas = regionAreaColors[region];
     for (const area of Object.keys(areas).sort()) {
@@ -1039,8 +1086,9 @@ function renderSidebarList() {
       row.appendChild(label);
 
       row.addEventListener("click", () => selectArea(area));
-      block.appendChild(row);
+      areasContainer.appendChild(row);
     }
+    block.appendChild(areasContainer);
     container.appendChild(block);
   }
 }
