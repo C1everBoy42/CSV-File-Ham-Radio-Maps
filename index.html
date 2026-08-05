@@ -248,6 +248,22 @@ let multiAreaColorByName = {};
 let csvLookup = {};
 // region -> { area -> color }
 let regionAreaColors = {};
+// region -> single unified color for that region -- used for every one
+// of its areas whenever a DIFFERENT region/area is selected, so other
+// regions read as one solid color instead of their individual per-area
+// colors (which are reserved for whichever region is actually focused).
+// Recomputed in rebuildFromSources() any time the loaded set changes.
+let regionColorByName = {};
+// A separate palette from individual area colors (which come straight
+// from the CSV) -- assigned deterministically by each region's
+// alphabetical position, so the same regions get the same "region
+// color" across reloads as long as the same set is loaded.
+const REGION_COLOR_PALETTE = [
+  "#25347E", "#4E7E25", "#7E2569", "#257E7A", "#7E6025", "#46257E",
+  "#257E2C", "#7E2538", "#25527E", "#6C7E25", "#76257E", "#257E5C",
+  "#7E4225", "#28257E", "#3C7E25", "#7E2556", "#25707E", "#7E7325",
+  "#58257E", "#257E3E", "#7E2525", "#25407E", "#5A7E25", "#7E2574",
+];
 // { type: "region"|"area", name: string } or null for no selection
 let selection = null;
 let repeaterMarkers = [];
@@ -386,7 +402,7 @@ function featureStyle(feature) {
   const multiMatch = matches.find((m) => m.type === "multiarea");
   const fillMatch = areaMatch || multiMatch;
 
-  const isSelected = !selection || matches.some((m) =>
+  const isFocused = !selection || matches.some((m) =>
     (selection.type === "region" && m.region === selection.name) ||
     (selection.type === "area" && m.area === selection.name));
 
@@ -397,16 +413,19 @@ function featureStyle(feature) {
   // multiAreaLayer instead (see renderMultiAreaOutlines()), so this
   // just needs the area's own normal boundary.
   //
-  // Selecting a region/area emphasizes it (higher opacity, thicker
-  // border) rather than hiding everything else -- other loaded
-  // regions/areas keep their normal full color so more than one region
-  // stays visible on the map at once, the selection just highlights
-  // which one is currently focused.
+  // Selecting a region/area focuses it -- its own areas keep their
+  // individual per-area colors (higher opacity, thicker border) so its
+  // internal breakdown is visible. Every OTHER region collapses down to
+  // ONE unified color for all its areas (regionColorByName), so at a
+  // glance it reads as a single distinct region rather than a patchwork
+  // of area colors competing with the focused one. With nothing
+  // selected at all, every region shows its normal per-area colors.
+  const displayColor = isFocused ? fillMatch.color : (regionColorByName[fillMatch.region] || fillMatch.color);
   return {
-    fillColor: fillMatch.color,
-    fillOpacity: isSelected ? (selection ? 0.75 : 0.55) : 0.55,
-    strokeColor: fillMatch.color,
-    strokeWeight: isSelected && selection ? 2 : 1,
+    fillColor: displayColor,
+    fillOpacity: isFocused ? (selection ? 0.75 : 0.55) : 0.55,
+    strokeColor: displayColor,
+    strokeWeight: isFocused && selection ? 2 : 1,
     clickable: true,
   };
 }
@@ -898,6 +917,11 @@ function rebuildFromSources() {
     if (result.hasCoordinates) anyCoords = true;
   }
   allRepeaterPointsCache = allRepeaterPoints;
+
+  regionColorByName = {};
+  Object.keys(regionAreaColors).sort().forEach((region, idx) => {
+    regionColorByName[region] = REGION_COLOR_PALETTE[idx % REGION_COLOR_PALETTE.length];
+  });
 
   console.log("Loaded sources:", loadedSources.map((s) => s.name));
   console.log("Unique counties matched:", totalMatched.size, "from", totalRows, "rows");
