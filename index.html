@@ -238,9 +238,9 @@ function featureStyle(feature) {
   const countyName = feature.getProperty("NAME");
   const stateAbbr = FIPS_TO_STATE[stateFips];
   const key = matchKey(countyName, stateAbbr);
-  const match = csvLookup[key];
+  const matches = csvLookup[key];
 
-  if (!match) {
+  if (!matches || matches.length === 0) {
     return {
       fillColor: "#cccccc",
       fillOpacity: 0.0,
@@ -250,27 +250,46 @@ function featureStyle(feature) {
     };
   }
 
-  const isSelected = !selection ||
-    (selection.type === "region" && match.region === selection.name) ||
-    (selection.type === "area" && match.area === selection.name);
+  // The regular area (if any) always provides the FILL -- a Multi
+  // Area/Region entry deliberately overlaps a regular area's own
+  // counties, so it must never hide the area underneath it. If this
+  // county belongs ONLY to a multi-area (no regular area claims it),
+  // the multi-area's own color is used for the fill instead, same as
+  // a regular area would be.
+  const areaMatch = matches.find((m) => m.type === "area");
+  const multiMatch = matches.find((m) => m.type === "multiarea");
+  const fillMatch = areaMatch || multiMatch;
+
+  const isSelected = !selection || matches.some((m) =>
+    (selection.type === "region" && m.region === selection.name) ||
+    (selection.type === "area" && m.area === selection.name));
 
   if (selection && !isSelected) {
     // Something is selected and this county isn't part of it: fade out
     // rather than hide entirely, so there's still geographic context.
     return {
-      fillColor: match.color,
+      fillColor: fillMatch.color,
       fillOpacity: 0.08,
-      strokeColor: match.color,
+      strokeColor: fillMatch.color,
       strokeWeight: 0.5,
       clickable: true,
     };
   }
 
+  // A county that's ALSO part of a multi-area gets a bold outline in
+  // the multi-area's own color, instead of the area's own (usually
+  // much thinner) boundary color -- signals the overlap without
+  // needing a whole separate map layer just to draw it. Only applies
+  // when there IS a regular area underneath (areaMatch) -- if the
+  // multi-area is the fill itself (no regular area here), there's
+  // nothing to distinguish it from, so it just looks like a normal
+  // area boundary.
+  const hasOverlap = areaMatch && multiMatch;
   return {
-    fillColor: match.color,
+    fillColor: fillMatch.color,
     fillOpacity: selection ? 0.75 : 0.55,
-    strokeColor: match.color,
-    strokeWeight: selection ? 2 : 1,
+    strokeColor: hasOverlap ? multiMatch.color : fillMatch.color,
+    strokeWeight: hasOverlap ? (selection ? 4 : 3) : (selection ? 2 : 1),
     clickable: true,
   };
 }
@@ -415,15 +434,18 @@ function findMyLocation() {
         return;
       }
 
-      const match = csvLookup[found.key];
-      if (!match) {
+      const matches = csvLookup[found.key];
+      if (!matches || matches.length === 0) {
         statusEl.textContent = "You're in " + found.countyName + " County, " + found.stateAbbr +
           " -- not part of any loaded area.";
         return;
       }
+      const match = matches.find((m) => m.type === "area") || matches[0];
+      const multiMatch = matches.find((m) => m.type === "multiarea");
 
       statusEl.textContent = "You're in " + found.countyName + " County, " + found.stateAbbr +
-        " -- Area: " + match.area + ", Region: " + match.region;
+        " -- Area: " + match.area + ", Region: " + match.region +
+        (multiMatch ? " (also in Multi Area/Region: " + multiMatch.area + ")" : "");
       selectArea(match.area);
     },
     (error) => {
@@ -455,14 +477,17 @@ function showInfoForFeature(event) {
   const countyName = event.feature.getProperty("NAME");
   const stateAbbr = FIPS_TO_STATE[stateFips];
   const key = matchKey(countyName, stateAbbr);
-  const match = csvLookup[key];
-  if (!match) return;
+  const matches = csvLookup[key];
+  if (!matches || matches.length === 0) return;
+  const match = matches.find((m) => m.type === "area") || matches[0];
+  const multiMatch = matches.find((m) => m.type === "multiarea");
 
   const infoWindow = new google.maps.InfoWindow({
     content:
       '<div id="info-window-content"><b>' + countyName + " County, " + stateAbbr + "</b>" +
       "Area: " + match.area + "<br>" +
-      "Region: " + match.region + "</div>",
+      "Region: " + match.region +
+      (multiMatch ? "<br>Also in Multi Area/Region: " + multiMatch.area : "") + "</div>",
     position: event.latLng,
   });
   infoWindow.open(map);
@@ -483,11 +508,19 @@ function loadCsvText(text) {
   regionAreaColors = {};
 
   // Two supported formats:
-  // 1. Simple: county,state,area,region,color (one row per county)
+  // 1. Simple: county,state,area,region,color,type (one row per county
+  //    -- "type" is "area" for a regular area or "multiarea" for a
+  //    Multi Area/Region entry, e.g. a repeater club's coverage that
+  //    deliberately overlaps a regular area's own counties. Older
+  //    exports (from before "type" existed) default every row to
+  //    "area", same as before this distinction was added.
   // 2. Combined CHIRP export: has Area/Region/Color columns plus a
   //    Comment column embedding "... / County Name County, ST" (one row
   //    per repeater channel -- county/area/region repeat across rows,
-  //    so we dedupe naturally by overwriting the same lookup key).
+  //    so we dedupe naturally by only keeping the first "area"-type
+  //    row per county). No "type" column in this format -- everything
+  //    is treated as a regular area, since this format predates Multi
+  //    Area/Region support.
   //    May also have Lat/Lon columns (only populated when "Fetch exact
   //    offset splits" was used in region_picker.py, since that's the
   //    same detail-page fetch GPS coordinates piggyback on) -- when
@@ -500,9 +533,10 @@ function loadCsvText(text) {
   let rowCount = 0;
   let matchedCounties = new Set();
   const repeaterPoints = [];
+  const seenAreaKeys = new Set();  // avoid duplicate "area" rows per county
 
   for (const row of parsed.data) {
-    let county, state, area, region, color;
+    let county, state, area, region, color, type;
 
     if (isChirpFormat) {
       const parsedLoc = parseCountyStateFromComment(row.Comment);
@@ -512,18 +546,36 @@ function loadCsvText(text) {
       area = (row.Area || "").trim();
       region = (row.Region || "").trim();
       color = (row.Color || "#4287f5").trim();
+      type = "area";
     } else {
       county = (row.county || "").trim();
       state = (row.state || "").trim();
       area = (row.area || "").trim();
       region = (row.region || "").trim();
       color = (row.color || "#4287f5").trim();
+      type = (row.type || "area").trim().toLowerCase() === "multiarea"
+        ? "multiarea" : "area";
     }
 
     if (!county || !state || !area) continue;
 
     const key = matchKey(county, state);
-    csvLookup[key] = { area, region, color };
+    const areaKey = key + "|" + area + "|" + type;
+    if (type === "area") {
+      // Only the first "area"-type row per county is kept -- repeated
+      // rows for the same county (common in the CHIRP-combined format,
+      // one row per repeater channel) are just duplicates, not
+      // multiple genuine areas claiming the same county.
+      if (seenAreaKeys.has(key + "|area")) continue;
+      seenAreaKeys.add(key + "|area");
+    } else if (seenAreaKeys.has(areaKey)) {
+      continue;  // duplicate multiarea row for the same county+area
+    } else {
+      seenAreaKeys.add(areaKey);
+    }
+
+    if (!csvLookup[key]) csvLookup[key] = [];
+    csvLookup[key].push({ area, region, color, type });
     matchedCounties.add(key);
 
     if (!regionAreaColors[region]) regionAreaColors[region] = {};
@@ -604,9 +656,12 @@ function renderSidebarList() {
 function countyKeysForSelection(sel) {
   const keys = [];
   for (const key in csvLookup) {
-    const match = csvLookup[key];
-    if (sel.type === "region" && match.region === sel.name) keys.push(key);
-    if (sel.type === "area" && match.area === sel.name) keys.push(key);
+    const matches = csvLookup[key];
+    if (matches.some((m) =>
+        (sel.type === "region" && m.region === sel.name) ||
+        (sel.type === "area" && m.area === sel.name))) {
+      keys.push(key);
+    }
   }
   return keys;
 }
