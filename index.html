@@ -164,6 +164,9 @@
   <div id="map"></div>
 </div>
 
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script>
 // ---------------------------------------------------------------------
@@ -860,9 +863,6 @@ document.getElementById("csv-file").addEventListener("change", (event) => {
   2. Firebase project config -- replace FIREBASE_CONFIG above, and
      enable Email/Password auth + Firestore in your Firebase project.
 -->
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script async
   src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDo923spAiu-UxoU10lLO1RH35WJFs_Bzc&libraries=geometry&callback=initMap">
 </script>
