@@ -116,7 +116,7 @@
   <div id="sidebar-overlay"></div>
   <div id="sidebar">
     <h1>Region / Area / County Map</h1>
-    <p class="hint">Load a CSV, then click a region or area below to highlight and zoom to it on the map.</p>
+    <p class="hint">Load one or more CSVs (pick several at once, or click multiple saved maps below) -- everything loaded shows together. Click a region or area below to highlight and zoom to it.</p>
 
     <div id="auth-section">
       <div id="auth-logged-out">
@@ -135,12 +135,16 @@
     </div>
 
     <div id="csv-input-row">
-      <input type="file" id="csv-file" accept=".csv">
+      <input type="file" id="csv-file" accept=".csv" multiple>
     </div>
     <div id="status">No CSV loaded yet.</div>
+    <div id="loaded-sources-section" style="margin-bottom: 16px;">
+      <div id="loaded-sources-list"></div>
+      <button id="clear-loaded-sources-btn" style="display:none; font-size: 12px; background: #33495f; color: #eef2f7; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; margin-top: 4px;">Clear all loaded files</button>
+    </div>
 
     <div id="saved-maps-section">
-      <div id="saved-maps-header">Saved Maps</div>
+      <div id="saved-maps-header">Saved Maps (click to add to map)</div>
       <div id="saved-maps-list"></div>
     </div>
 
@@ -158,6 +162,11 @@
         Find My Location
       </button>
       <div id="my-location-status" style="font-size: 12px; color: #9fb0c3; margin-top: 4px;"></div>
+      <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; margin-top: 8px; cursor: pointer;">
+        <input type="checkbox" id="location-watch-toggle">
+        Notify me when I enter a new area/region
+      </label>
+      <div id="location-watch-status" style="font-size: 12px; color: #9fb0c3; margin-top: 4px;"></div>
     </div>
     <div id="region-list"></div>
   </div>
@@ -573,6 +582,133 @@ function findMyLocation() {
 
 document.getElementById("my-location-btn").addEventListener("click", findMyLocation);
 
+// ---------------------------------------------------------------------
+// "Notify me when I enter a new area/region": a continuous version of
+// Find My Location -- watches GPS position and, whenever the point moves
+// into a county belonging to a DIFFERENT loaded area or region than the
+// last one it was in, surfaces that both on-page and (if permitted) as
+// a real browser notification. Off by default (continuous high-accuracy
+// GPS is a battery cost the person should opt into).
+// ---------------------------------------------------------------------
+let locationWatchId = null;
+let lastWatchedAreaKey = null;   // countyKey last matched, so pure GPS
+                                  // jitter within the same county doesn't
+                                  // re-fire the notification every ping
+let lastWatchedAreaName = null;
+let lastWatchedRegionName = null;
+
+function announceAreaChange(text) {
+  const statusEl = document.getElementById("location-watch-status");
+  statusEl.textContent = text;
+  if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+    try {
+      new Notification("Region / Area Map", { body: text });
+    } catch (e) {
+      // Some browsers (notably iOS Safari) support the permission
+      // prompt but throw on `new Notification(...)` outside a service
+      // worker -- the on-page status text above already covers it, so
+      // just swallow this rather than breaking the position callback.
+      console.warn("Browser notification failed:", e);
+    }
+  }
+}
+
+function handleWatchPosition(position) {
+  const latLng = new google.maps.LatLng(
+    position.coords.latitude, position.coords.longitude);
+
+  if (myLocationMarker) myLocationMarker.setMap(null);
+  myLocationMarker = new google.maps.Marker({
+    position: latLng,
+    map,
+    icon: {
+      path: google.maps.SymbolPath.CIRCLE,
+      scale: 8,
+      fillColor: "#ff3b30",
+      fillOpacity: 1,
+      strokeColor: "#ffffff",
+      strokeWeight: 2,
+    },
+    title: "You are here",
+    zIndex: 999,
+  });
+
+  if (!countiesLayer) return;
+  const found = findCountyKeyAtPoint(latLng);
+  const key = found ? found.key : null;
+  if (key === lastWatchedAreaKey) return;  // same county as last ping -- no change
+  lastWatchedAreaKey = key;
+
+  if (!found) {
+    document.getElementById("location-watch-status").textContent =
+      "Watching your location...";
+    return;
+  }
+
+  const matches = csvLookup[key];
+  if (!matches || matches.length === 0) {
+    document.getElementById("location-watch-status").textContent =
+      "You're in " + found.countyName + " County, " + found.stateAbbr +
+      " -- not part of any loaded area.";
+    lastWatchedAreaName = null;
+    lastWatchedRegionName = null;
+    return;
+  }
+
+  const match = matches.find((m) => m.type === "area") || matches[0];
+  const multiMatch = matches.find((m) => m.type === "multiarea");
+
+  if (match.area !== lastWatchedAreaName || match.region !== lastWatchedRegionName) {
+    let text = "Entered " + match.area + " (" + match.region + ")" +
+      " -- " + found.countyName + " County, " + found.stateAbbr;
+    if (multiMatch) text += ", also in " + multiMatch.area;
+    announceAreaChange(text);
+    lastWatchedAreaName = match.area;
+    lastWatchedRegionName = match.region;
+  }
+}
+
+function startLocationWatch() {
+  const statusEl = document.getElementById("location-watch-status");
+  if (!navigator.geolocation) {
+    statusEl.textContent = "Geolocation isn't supported in this browser.";
+    document.getElementById("location-watch-toggle").checked = false;
+    return;
+  }
+  lastWatchedAreaKey = null;
+  lastWatchedAreaName = null;
+  lastWatchedRegionName = null;
+  statusEl.textContent = "Watching your location...";
+
+  if (typeof Notification !== "undefined" && Notification.permission === "default") {
+    Notification.requestPermission();
+  }
+
+  locationWatchId = navigator.geolocation.watchPosition(
+    handleWatchPosition,
+    (error) => {
+      statusEl.textContent = "Couldn't get your location (" + error.message + ").";
+    },
+    { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
+  );
+}
+
+function stopLocationWatch() {
+  if (locationWatchId !== null) {
+    navigator.geolocation.clearWatch(locationWatchId);
+    locationWatchId = null;
+  }
+  document.getElementById("location-watch-status").textContent = "";
+}
+
+document.getElementById("location-watch-toggle").addEventListener("change", (event) => {
+  if (event.target.checked) {
+    startLocationWatch();
+  } else {
+    stopLocationWatch();
+  }
+});
+
 // Mobile drawer sidebar: hamburger button opens it, tapping the dark
 // overlay behind it closes it again. On wider screens the sidebar is
 // always visible and this button stays hidden via CSS, so none of this
@@ -618,10 +754,20 @@ function parseCountyStateFromComment(comment) {
   return { county: match[1].trim(), state: match[2].trim() };
 }
 
-function loadCsvText(text) {
+// Every loaded CSV is kept as its own "source" ({id, name, text}) so more
+// than one can be on the map at once -- picking additional files, or
+// clicking more saved maps, ADDS to what's already shown instead of
+// replacing it. Removing one source just re-parses whatever's left.
+let loadedSources = [];
+let sourceIdCounter = 0;
+let allRepeaterPointsCache = [];
+
+// Parses one CSV's text and MERGES its rows into the shared csvLookup /
+// regionAreaColors (does not reset them -- that's rebuildFromSources()'s
+// job, once, before looping over every currently-loaded source). Returns
+// this source's own stats so rebuildFromSources() can total them up.
+function parseCsvIntoState(text) {
   const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
-  csvLookup = {};
-  regionAreaColors = {};
 
   // Two supported formats:
   // 1. Simple: county,state,area,region,color,type (one row per county
@@ -647,9 +793,15 @@ function loadCsvText(text) {
   const hasCoordinates = fields.includes("Lat") && fields.includes("Lon");
 
   let rowCount = 0;
-  let matchedCounties = new Set();
+  const matchedCounties = new Set();
   const repeaterPoints = [];
-  const seenAreaKeys = new Set();  // avoid duplicate "area" rows per county
+  const seenAreaKeys = new Set();  // avoid duplicate "area" rows per county,
+                                    // scoped to just THIS source/file --
+                                    // two different loaded files are each
+                                    // allowed their own "area" row for the
+                                    // same county (they just both land in
+                                    // csvLookup[key], same as an
+                                    // intentional multiarea overlap would).
 
   for (const row of parsed.data) {
     let county, state, area, region, color, type;
@@ -678,10 +830,6 @@ function loadCsvText(text) {
     const key = matchKey(county, state);
     const areaKey = key + "|" + area + "|" + type;
     if (type === "area") {
-      // Only the first "area"-type row per county is kept -- repeated
-      // rows for the same county (common in the CHIRP-combined format,
-      // one row per repeater channel) are just duplicates, not
-      // multiple genuine areas claiming the same county.
       if (seenAreaKeys.has(key + "|area")) continue;
       seenAreaKeys.add(key + "|area");
     } else if (seenAreaKeys.has(areaKey)) {
@@ -711,22 +859,111 @@ function loadCsvText(text) {
     }
   }
 
-  console.log("CSV format detected:", isChirpFormat ? "combined CHIRP export" : "simple");
-  console.log("Unique counties matched:", matchedCounties.size, "from", rowCount, "rows");
-  console.log("Sample lookup keys:", Object.keys(csvLookup).slice(0, 5));
-  console.log("Repeater markers with valid coordinates:", repeaterPoints.length);
+  return { rowCount, matchedCounties, repeaterPoints, isChirpFormat, hasCoordinates };
+}
 
-  let statusText = matchedCounties.size + " unique counties loaded from " + rowCount +
-    " row(s), across " + Object.keys(regionAreaColors).length + " region(s).";
-  if (hasCoordinates) {
-    statusText += " " + repeaterPoints.length + " repeater location(s) with GPS data.";
+// Re-parses and re-merges EVERY currently-loaded source from scratch --
+// the simplest reliable way to support removing one source without
+// disturbing the others (rather than trying to surgically un-merge just
+// that source's rows out of a shared lookup).
+function rebuildFromSources() {
+  csvLookup = {};
+  regionAreaColors = {};
+  let totalRows = 0;
+  const totalMatched = new Set();
+  let allRepeaterPoints = [];
+  let anyCoords = false;
+
+  for (const source of loadedSources) {
+    const result = parseCsvIntoState(source.text);
+    totalRows += result.rowCount;
+    result.matchedCounties.forEach((k) => totalMatched.add(k));
+    allRepeaterPoints = allRepeaterPoints.concat(result.repeaterPoints);
+    if (result.hasCoordinates) anyCoords = true;
+  }
+  allRepeaterPointsCache = allRepeaterPoints;
+
+  console.log("Loaded sources:", loadedSources.map((s) => s.name));
+  console.log("Unique counties matched:", totalMatched.size, "from", totalRows, "rows");
+
+  let statusText;
+  if (loadedSources.length === 0) {
+    statusText = "No CSV loaded yet.";
+  } else {
+    statusText = totalMatched.size + " unique counties loaded from " + totalRows +
+      " row(s), across " + Object.keys(regionAreaColors).length + " region(s)" +
+      (loadedSources.length > 1 ? " (" + loadedSources.length + " files loaded)." : ".");
+    if (anyCoords) {
+      statusText += " " + allRepeaterPoints.length + " repeater location(s) with GPS data.";
+    }
   }
   document.getElementById("status").textContent = statusText;
 
+  renderLoadedSourcesList();
   renderSidebarList();
   applyStyling();
   renderMultiAreaOutlines();
-  renderRepeaterMarkers(repeaterPoints);
+  renderRepeaterMarkers(allRepeaterPoints);
+}
+
+// Adds one more CSV to the map alongside whatever's already loaded. name
+// is just a display label (file name, or saved-map name) -- duplicates
+// by name are allowed (e.g. re-picking the same file), each gets its own
+// entry so it can be removed independently.
+function addCsvSource(text, name) {
+  loadedSources.push({ id: "src" + (++sourceIdCounter), name, text });
+  rebuildFromSources();
+}
+
+function removeCsvSource(id) {
+  loadedSources = loadedSources.filter((s) => s.id !== id);
+  rebuildFromSources();
+}
+
+function clearAllCsvSources() {
+  loadedSources = [];
+  rebuildFromSources();
+}
+
+function renderLoadedSourcesList() {
+  const container = document.getElementById("loaded-sources-list");
+  const clearBtn = document.getElementById("clear-loaded-sources-btn");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (loadedSources.length === 0) {
+    clearBtn.style.display = "none";
+    return;
+  }
+  clearBtn.style.display = loadedSources.length > 1 ? "block" : "none";
+
+  for (const source of loadedSources) {
+    const row = document.createElement("div");
+    row.className = "saved-map-row";
+
+    const label = document.createElement("span");
+    label.className = "saved-map-name";
+    label.textContent = source.name;
+    row.appendChild(label);
+
+    const del = document.createElement("button");
+    del.className = "saved-map-delete";
+    del.textContent = "\u00d7";
+    del.title = "Remove this file from the map";
+    del.addEventListener("click", () => removeCsvSource(source.id));
+    row.appendChild(del);
+
+    container.appendChild(row);
+  }
+}
+
+// Kept for compatibility -- a single CSV, replacing anything else that
+// was loaded. Used for the "log in and it restores your last map" case;
+// everywhere a person is actively picking files/maps now goes through
+// addCsvSource() instead so multiple loads accumulate.
+function loadCsvText(text, name) {
+  loadedSources = [{ id: "src" + (++sourceIdCounter), name: name || "Loaded map", text }];
+  rebuildFromSources();
 }
 
 function renderSidebarList() {
@@ -865,7 +1102,6 @@ const auth = firebase.auth();
 const db = firebase.firestore();
 
 let currentUser = null;
-let activeMapName = null;
 
 function showAuthError(message) {
   document.getElementById("auth-error").textContent = message || "";
@@ -916,7 +1152,6 @@ auth.onAuthStateChanged((user) => {
     loggedInEl.style.display = "none";
   }
 
-  activeMapName = null;
   renderSavedMapsList();
 });
 
@@ -933,7 +1168,6 @@ async function saveCurrentMap(name, csvText) {
     csvText,
     savedAt: firebase.firestore.FieldValue.serverTimestamp(),
   });
-  activeMapName = name;
   renderSavedMapsList();
 }
 
@@ -941,8 +1175,7 @@ async function loadSavedMap(name) {
   if (!currentUser) return;
   const doc = await savedMapsCollection().doc(name).get();
   if (!doc.exists) return;
-  activeMapName = name;
-  loadCsvText(doc.data().csvText);
+  addCsvSource(doc.data().csvText, name);
   renderSavedMapsList();
 }
 
@@ -950,7 +1183,6 @@ async function deleteSavedMap(name) {
   if (!currentUser) return;
   if (!confirm("Delete saved map \"" + name + "\"? This can't be undone.")) return;
   await savedMapsCollection().doc(name).delete();
-  if (activeMapName === name) activeMapName = null;
   renderSavedMapsList();
 }
 
@@ -979,7 +1211,8 @@ async function renderSavedMapsList() {
     const name = doc.id;
     const data = doc.data();
     const row = document.createElement("div");
-    row.className = "saved-map-row" + (name === activeMapName ? " active" : "");
+    row.className = "saved-map-row" +
+      (loadedSources.some((s) => s.name === name) ? " active" : "");
 
     const label = document.createElement("span");
     label.className = "saved-map-name";
@@ -1004,28 +1237,49 @@ async function renderSavedMapsList() {
   });
 }
 
+document.getElementById("clear-loaded-sources-btn").addEventListener("click", () => {
+  if (confirm("Remove all loaded CSV files from the map?")) clearAllCsvSources();
+});
+
 document.getElementById("csv-file").addEventListener("change", (event) => {
-  const file = event.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const csvText = e.target.result;
-    const defaultName = file.name.replace(/\.csv$/i, "");
-    if (!currentUser) {
-      // Not logged in -- still show it on the map for this session,
-      // just can't persist it to an account.
-      loadCsvText(csvText);
-      return;
-    }
-    const name = prompt("Save this map as:", defaultName);
-    if (name === null) {
-      loadCsvText(csvText);
-      return;
-    }
-    saveCurrentMap(name.trim() || defaultName, csvText);
-    loadCsvText(csvText);
-  };
-  reader.readAsText(file);
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+
+  // A single file keeps the old behavior (optionally prompting to save
+  // it to your account). Picking several at once just loads them all
+  // alongside anything already on the map -- prompting to save each one
+  // individually would mean a popup per file, so multi-select skips the
+  // save-to-account prompt; save any of them individually afterward via
+  // a single-file pick if you want it in your saved maps list.
+  if (files.length === 1) {
+    const file = files[0];
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const csvText = e.target.result;
+      const defaultName = file.name.replace(/\.csv$/i, "");
+      if (!currentUser) {
+        addCsvSource(csvText, defaultName);
+        return;
+      }
+      const name = prompt("Save this map as:", defaultName);
+      if (name === null) {
+        addCsvSource(csvText, defaultName);
+        return;
+      }
+      saveCurrentMap(name.trim() || defaultName, csvText);
+      addCsvSource(csvText, name.trim() || defaultName);
+    };
+    reader.readAsText(file);
+    return;
+  }
+
+  for (const file of files) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      addCsvSource(e.target.result, file.name.replace(/\.csv$/i, ""));
+    };
+    reader.readAsText(file);
+  }
 });
 </script>
 
