@@ -879,6 +879,16 @@ function parseCsvIntoState(text) {
 // disturbing the others (rather than trying to surgically un-merge just
 // that source's rows out of a shared lookup).
 function rebuildFromSources() {
+  // Loading (or removing) a source changes what's actually on the map,
+  // so any previous selection is cleared here -- otherwise a region you
+  // selected earlier keeps everything ELSE (including whatever you just
+  // loaded) faded down to near-invisible, since the fade-non-selected
+  // styling in featureStyle() doesn't know a new region even exists yet.
+  // Default view after any load is always "show everything loaded".
+  selection = null;
+  const clearBtn = document.getElementById("clear-selection-btn");
+  if (clearBtn) clearBtn.style.display = "none";
+
   csvLookup = {};
   regionAreaColors = {};
   let totalRows = 0;
