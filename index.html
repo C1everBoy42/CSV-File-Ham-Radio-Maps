@@ -168,6 +168,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
 <script>
 // ---------------------------------------------------------------------
 // FIPS state-code -> two-letter abbreviation, used to match the public
@@ -206,6 +207,22 @@ function matchKey(countyName, stateAbbr) {
 
 let map;
 let countiesLayer;
+// A SEPARATE Data layer, added on top of countiesLayer, that holds one
+// dissolved (outer-boundary-only) polygon per multi-area -- see
+// renderMultiAreaOutlines(). Kept apart from countiesLayer because a
+// per-county style can only ever draw per-county edges; a multi-area
+// spanning several counties needs its OWN merged shape to get a single
+// clean outline instead of a bold line on every internal county border.
+let multiAreaLayer;
+// key: "normalizedcounty|ST" -> raw GeoJSON feature (from the counties
+// source data, kept alongside what's loaded into countiesLayer) so
+// renderMultiAreaOutlines() can turf.dissolve() the right counties
+// without a second network fetch.
+let countyFeaturesByKey = {};
+// multi-area name -> its color, set by renderMultiAreaOutlines() and
+// read back by applyStyling() when re-styling multiAreaLayer on
+// selection change.
+let multiAreaColorByName = {};
 // key: "normalizedcounty|ST" -> { area, region, color }
 let csvLookup = {};
 // region -> { area -> color }
@@ -224,12 +241,100 @@ function initMap() {
   });
 
   countiesLayer = new google.maps.Data({ map });
-  countiesLayer.loadGeoJson(COUNTIES_GEOJSON_URL, null, () => {
-    applyStyling();
-  });
+  multiAreaLayer = new google.maps.Data({ map });
+
+  fetch(COUNTIES_GEOJSON_URL)
+    .then((r) => r.json())
+    .then((geojson) => {
+      for (const feature of geojson.features) {
+        const stateFips = feature.properties.STATE;
+        const countyName = feature.properties.NAME;
+        const stateAbbr = FIPS_TO_STATE[stateFips];
+        const key = matchKey(countyName, stateAbbr);
+        countyFeaturesByKey[key] = feature;
+      }
+      countiesLayer.addGeoJson(geojson);
+      applyStyling();
+      renderMultiAreaOutlines();
+    });
 
   countiesLayer.addListener("click", (event) => {
     showInfoForFeature(event);
+  });
+}
+
+// Builds one dissolved (interior-boundaries-removed) outline per
+// multi-area name, so a multi-area spanning many counties reads as a
+// single clean border instead of a bold-colored line repeated on every
+// county-to-county edge inside it. Called after every CSV load.
+function renderMultiAreaOutlines() {
+  multiAreaLayer.forEach((f) => multiAreaLayer.remove(f));
+  if (Object.keys(countyFeaturesByKey).length === 0) return;
+
+  // Group counties by multi-area name (not by region -- the same
+  // multi-area can be linked to more than one region and appear as
+  // separate CSV rows, but its shape is the same either way).
+  const countiesByMultiArea = {};
+  multiAreaColorByName = {};
+  for (const key in csvLookup) {
+    for (const m of csvLookup[key]) {
+      if (m.type !== "multiarea") continue;
+      if (!countiesByMultiArea[m.area]) countiesByMultiArea[m.area] = new Set();
+      countiesByMultiArea[m.area].add(key);
+      multiAreaColorByName[m.area] = m.color;
+    }
+  }
+
+  for (const areaName in countiesByMultiArea) {
+    const polygons = [];
+    for (const key of countiesByMultiArea[areaName]) {
+      const feature = countyFeaturesByKey[key];
+      if (!feature) continue;
+      // turf.dissolve only accepts Polygon features, so split any
+      // MultiPolygon county (e.g. one with small islands) into its
+      // individual parts first -- they'll still merge correctly with
+      // their neighbors on shared edges.
+      if (feature.geometry.type === "MultiPolygon") {
+        for (const coords of feature.geometry.coordinates) {
+          polygons.push(turf.polygon(coords, { grp: areaName }));
+        }
+      } else if (feature.geometry.type === "Polygon") {
+        polygons.push(turf.polygon(feature.geometry.coordinates, { grp: areaName }));
+      }
+    }
+    if (polygons.length === 0) continue;
+
+    let merged;
+    try {
+      merged = polygons.length === 1
+        ? polygons[0]
+        : turf.dissolve(turf.featureCollection(polygons), { propertyName: "grp" });
+    } catch (e) {
+      // Dissolve can fail on messy/adjacent-but-not-snapped source
+      // geometry -- fall back to just adding the un-merged county
+      // polygons rather than losing the outline entirely.
+      console.warn("Could not dissolve multi-area outline for", areaName, e);
+      merged = turf.featureCollection(polygons);
+    }
+
+    const mergedFeatures = merged.type === "FeatureCollection" ? merged.features : [merged];
+    for (const mf of mergedFeatures) {
+      // Ensure "grp" survives regardless of exactly how turf.dissolve
+      // (or the fallback path) populated properties, since later code
+      // reads it back via feature.getProperty("grp") to look up color.
+      mf.properties = Object.assign({}, mf.properties, { grp: areaName });
+      multiAreaLayer.addGeoJson({ type: "FeatureCollection", features: [mf] });
+    }
+  }
+
+  multiAreaLayer.forEach((feature) => {
+    const areaName = feature.getProperty("grp");
+    multiAreaLayer.overrideStyle(feature, {
+      fillOpacity: 0,
+      strokeColor: multiAreaColorByName[areaName] || "#000000",
+      strokeWeight: 4,
+      clickable: false,
+    });
   });
 }
 
@@ -276,20 +381,17 @@ function featureStyle(feature) {
     };
   }
 
-  // A county that's ALSO part of a multi-area gets a bold outline in
-  // the multi-area's own color, instead of the area's own (usually
-  // much thinner) boundary color -- signals the overlap without
-  // needing a whole separate map layer just to draw it. Only applies
-  // when there IS a regular area underneath (areaMatch) -- if the
-  // multi-area is the fill itself (no regular area here), there's
-  // nothing to distinguish it from, so it just looks like a normal
-  // area boundary.
-  const hasOverlap = areaMatch && multiMatch;
+  // Multi-area overlap is no longer signaled with a bold per-county
+  // stroke here -- that drew the multi-area's color on every internal
+  // county-to-county edge inside it (a mesh, not an outline). The
+  // dissolved, single-outline version is drawn on top by
+  // multiAreaLayer instead (see renderMultiAreaOutlines()), so this
+  // just needs the area's own normal boundary.
   return {
     fillColor: fillMatch.color,
     fillOpacity: selection ? 0.75 : 0.55,
-    strokeColor: hasOverlap ? multiMatch.color : fillMatch.color,
-    strokeWeight: hasOverlap ? (selection ? 4 : 3) : (selection ? 2 : 1),
+    strokeColor: fillMatch.color,
+    strokeWeight: selection ? 2 : 1,
     clickable: true,
   };
 }
@@ -298,6 +400,20 @@ function applyStyling() {
   if (!countiesLayer) return;
   countiesLayer.forEach((feature) => {
     countiesLayer.overrideStyle(feature, featureStyle(feature));
+  });
+
+  if (!multiAreaLayer) return;
+  multiAreaLayer.forEach((feature) => {
+    const areaName = feature.getProperty("grp");
+    const isSelected = !selection ||
+      (selection.type === "area" && selection.name === areaName) ||
+      (selection.type === "region" && Object.keys(regionAreaColors[selection.name] || {}).includes(areaName));
+    multiAreaLayer.overrideStyle(feature, {
+      fillOpacity: 0,
+      strokeColor: multiAreaColorByName[areaName] || "#000000",
+      strokeWeight: isSelected ? 4 : 0,
+      clickable: false,
+    });
   });
 }
 
@@ -609,6 +725,7 @@ function loadCsvText(text) {
 
   renderSidebarList();
   applyStyling();
+  renderMultiAreaOutlines();
   renderRepeaterMarkers(repeaterPoints);
 }
 
