@@ -390,29 +390,23 @@ function featureStyle(feature) {
     (selection.type === "region" && m.region === selection.name) ||
     (selection.type === "area" && m.area === selection.name));
 
-  if (selection && !isSelected) {
-    // Something is selected and this county isn't part of it: fade out
-    // rather than hide entirely, so there's still geographic context.
-    return {
-      fillColor: fillMatch.color,
-      fillOpacity: 0.08,
-      strokeColor: fillMatch.color,
-      strokeWeight: 0.5,
-      clickable: true,
-    };
-  }
-
   // Multi-area overlap is no longer signaled with a bold per-county
   // stroke here -- that drew the multi-area's color on every internal
   // county-to-county edge inside it (a mesh, not an outline). The
   // dissolved, single-outline version is drawn on top by
   // multiAreaLayer instead (see renderMultiAreaOutlines()), so this
   // just needs the area's own normal boundary.
+  //
+  // Selecting a region/area emphasizes it (higher opacity, thicker
+  // border) rather than hiding everything else -- other loaded
+  // regions/areas keep their normal full color so more than one region
+  // stays visible on the map at once, the selection just highlights
+  // which one is currently focused.
   return {
     fillColor: fillMatch.color,
-    fillOpacity: selection ? 0.75 : 0.55,
+    fillOpacity: isSelected ? (selection ? 0.75 : 0.55) : 0.55,
     strokeColor: fillMatch.color,
-    strokeWeight: selection ? 2 : 1,
+    strokeWeight: isSelected && selection ? 2 : 1,
     clickable: true,
   };
 }
@@ -432,7 +426,7 @@ function applyStyling() {
     multiAreaLayer.overrideStyle(feature, {
       fillOpacity: 0,
       strokeColor: multiAreaColorByName[areaName] || "#000000",
-      strokeWeight: isSelected ? 4 : 0,
+      strokeWeight: isSelected ? 4 : 2,
       clickable: false,
     });
   });
