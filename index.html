@@ -910,19 +910,56 @@ function rebuildFromSources() {
 // is just a display label (file name, or saved-map name) -- duplicates
 // by name are allowed (e.g. re-picking the same file), each gets its own
 // entry so it can be removed independently.
+//
+// While logged in, this ALSO mirrors the source into the account's
+// "currentSources" collection in Firestore (separate from the
+// explicitly-named Saved Maps list) -- that's what makes anything
+// loaded show up automatically the next time this account is logged
+// into, on any device, without the person having to save/reload it by
+// name themselves. Logged out, it just stays local to this tab/session.
 function addCsvSource(text, name) {
-  loadedSources.push({ id: "src" + (++sourceIdCounter), name, text });
-  rebuildFromSources();
+  const source = { id: "src" + (++sourceIdCounter), name, text, synced: false };
+  loadedSources.push(source);
+  rebuildFromSources();  // show it immediately, don't wait on the network
+
+  if (currentUser) {
+    currentSourcesCollection().add({
+      name, text, savedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    }).then((docRef) => {
+      source.id = docRef.id;
+      source.synced = true;
+      renderLoadedSourcesList();  // refresh so its remove button's closure
+                                   // uses the new (Firestore doc) id
+    }).catch((e) => {
+      console.warn("Could not sync loaded file to your account:", e);
+    });
+  }
 }
 
 function removeCsvSource(id) {
+  const source = loadedSources.find((s) => s.id === id);
   loadedSources = loadedSources.filter((s) => s.id !== id);
   rebuildFromSources();
+
+  if (currentUser && source && source.synced) {
+    currentSourcesCollection().doc(id).delete().catch((e) => {
+      console.warn("Could not remove synced file from your account:", e);
+    });
+  }
 }
 
 function clearAllCsvSources() {
+  const toDelete = currentUser ? loadedSources.filter((s) => s.synced) : [];
   loadedSources = [];
   rebuildFromSources();
+
+  if (currentUser && toDelete.length) {
+    const batch = db.batch();
+    toDelete.forEach((s) => batch.delete(currentSourcesCollection().doc(s.id)));
+    batch.commit().catch((e) => {
+      console.warn("Could not clear synced files from your account:", e);
+    });
+  }
 }
 
 function renderLoadedSourcesList() {
@@ -943,7 +980,8 @@ function renderLoadedSourcesList() {
 
     const label = document.createElement("span");
     label.className = "saved-map-name";
-    label.textContent = source.name;
+    label.textContent = source.name +
+      (currentUser && !source.synced ? " (syncing...)" : "");
     row.appendChild(label);
 
     const del = document.createElement("button");
@@ -1147,13 +1185,62 @@ auth.onAuthStateChanged((user) => {
     document.getElementById("auth-user-email").title = user.email;
     showAuthError("");
     document.getElementById("auth-password").value = "";
+    syncLocalSourcesToAccountAndLoad();
   } else {
     loggedOutEl.style.display = "block";
     loggedInEl.style.display = "none";
+    // Logging out drops back to a blank, local-only session -- whatever
+    // was loaded stays safely in the account's currentSources collection
+    // (and comes right back on next login, here or on any other
+    // device), it just isn't shown while logged out.
+    loadedSources = [];
+    rebuildFromSources();
   }
 
   renderSavedMapsList();
 });
+
+// Called right after logging in. Two things happen, in order:
+// 1. Anything already loaded THIS session that isn't synced yet (loaded
+//    before logging in) gets pushed up into the account.
+// 2. The account's full currentSources collection becomes the new
+//    loadedSources list -- this is what pulls in everything left loaded
+//    from OTHER devices/sessions under this same account, so the map
+//    ends up showing "everything this account currently has loaded,
+//    from anywhere" rather than just what was already open here.
+async function syncLocalSourcesToAccountAndLoad() {
+  document.getElementById("status").textContent = "Loading your account's map data...";
+
+  const unsynced = loadedSources.filter((s) => !s.synced);
+  for (const s of unsynced) {
+    try {
+      const docRef = await currentSourcesCollection().add({
+        name: s.name, text: s.text,
+        savedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      s.id = docRef.id;
+      s.synced = true;
+    } catch (e) {
+      console.warn("Could not sync a locally loaded file to your account:", e);
+    }
+  }
+
+  try {
+    const snapshot = await currentSourcesCollection().orderBy("savedAt", "asc").get();
+    loadedSources = snapshot.docs.map((doc) => ({
+      id: doc.id, name: doc.data().name, text: doc.data().text, synced: true,
+    }));
+  } catch (e) {
+    console.warn("Could not load your account's current map data:", e);
+  }
+  rebuildFromSources();
+  renderSavedMapsList();  // refreshes "active" highlighting now that
+                           // loadedSources reflects the account's data
+}
+
+function currentSourcesCollection() {
+  return db.collection("users").doc(currentUser.uid).collection("currentSources");
+}
 
 function savedMapsCollection() {
   return db.collection("users").doc(currentUser.uid).collection("savedMaps");
