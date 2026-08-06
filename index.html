@@ -88,11 +88,11 @@
 
   #locate-me-control {
     width: 44px; height: 44px; margin: 0 12px 14px 0; border-radius: 50%;
-    border: 3px solid #ffffff; background: #ff3b30; cursor: pointer; padding: 0;
+    border: 3px solid #ffffff; background: #4285F4; cursor: pointer; padding: 0;
     box-shadow: 0 2px 6px rgba(0,0,0,0.35);
   }
-  #locate-me-control:hover { background: #e5342a; }
-  #locate-me-control:active { background: #cc2e25; }
+  #locate-me-control:hover { background: #3574db; }
+  #locate-me-control:active { background: #2a63c2; }
 
   #sidebar-toggle-btn {
     display: none; position: absolute; top: 12px; left: 12px; z-index: 20;
@@ -341,19 +341,23 @@ function initMap() {
   map = new google.maps.Map(document.getElementById("map"), {
     center: { lat: 37.8, lng: -96 },
     zoom: 5,
-    mapTypeControl: false,
-    streetViewControl: false,
-    fullscreenControl: false,
-    rotateControl: false,
-    zoomControl: false,  // no on-screen zoom buttons at all now (a custom
-                          // +/- control used to live here but was removed
-                          // as redundant once the locate/track button
-                          // below handles "zoom in if too far out") --
-                          // pinch and scroll-wheel zoom still work fine,
-                          // this only affects on-screen buttons. Every
-                          // other native control (pan/compass, fullscreen,
-                          // rotate) stays off too, so the only thing in
-                          // that corner is our own locate-me button.
+    disableDefaultUI: true,  // the single master switch for every native
+                              // Google control at once (zoom, map type,
+                              // street view, fullscreen, rotate/compass,
+                              // pan). Turning individual xControl:false
+                              // options on one at a time kept missing
+                              // edge cases -- e.g. a compass/pan icon
+                              // that still rendered even with
+                              // rotateControl explicitly set false, since
+                              // some controls' visibility depends on
+                              // imagery/gesture state as well as the
+                              // boolean flag in certain API versions.
+                              // This guarantees nothing native shows up
+                              // anywhere. Our OWN custom locate-me button
+                              // (added via map.controls[...]) is
+                              // unaffected -- disableDefaultUI only
+                              // suppresses Google's own controls, not
+                              // ones we add ourselves.
   });
 
   countiesLayer = new google.maps.Data({ map });
@@ -388,17 +392,13 @@ function initMap() {
   });
 }
 
-// A plain red dot button (matching the "You are here" marker's own
-// color/style), sitting alone in the very bottom-right corner of the
-// map -- pressing it starts location tracking (same as checking
-// "Notify me...") AND immediately fetches your current position to pan
-// the map there, zooming in to a useful level only if you're currently
-// zoomed out past that (never zooms back OUT if you're already close).
-// Fetching the position directly here (rather than just relying on the
-// background watch to eventually fire) matters because if tracking was
-// ALREADY on, starting it again is a no-op -- the button would zoom in
-// place without ever actually panning to where you are, which is the
-// whole point of a locate button.
+// A dot button matching the "You are here" marker's own color/style,
+// sitting alone in the very bottom-right corner of the map -- pressing
+// it starts location tracking (same as checking "Notify me...") AND
+// immediately fetches your current position to pan the map there,
+// zooming in to level 10 if you're currently zoomed out PAST that.
+// Never zooms in any FURTHER than 10 through this button, and never
+// zooms out if you're already closer than that -- 10 is just the floor.
 function setUpLocateMeControl() {
   const btn = document.createElement("button");
   btn.type = "button";
@@ -413,28 +413,21 @@ function setUpLocateMeControl() {
       startLocationWatch();
     }
 
-    const zoomInIfNeeded = () => {
-      if (map.getZoom() < 13) map.setZoom(13);
-    };
-
-    if (!navigator.geolocation) {
-      zoomInIfNeeded();
-      return;
-    }
+    if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const latLng = new google.maps.LatLng(
           position.coords.latitude, position.coords.longitude);
         map.panTo(latLng);
-        zoomInIfNeeded();
+        if (map.getZoom() < 10) map.setZoom(10);
       },
       () => {
         // Couldn't get a fresh fix (permission denied, timeout, etc.) --
         // fall back to the last known "You are here" marker position if
         // the background watch already placed one, so the button still
-        // does SOMETHING useful instead of just zooming blindly.
+        // does SOMETHING useful.
         if (myLocationMarker) map.panTo(myLocationMarker.getPosition());
-        zoomInIfNeeded();
+        if (map.getZoom() < 10) map.setZoom(10);
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 }
     );
@@ -694,6 +687,54 @@ function renderRepeaterMarkers(points) {
 // highlight behavior as clicking an area in the sidebar.
 // ---------------------------------------------------------------------
 let myLocationMarker = null;
+// The translucent "accuracy halo" circle drawn around the dot, matching
+// Google's own "My Location" look -- a real-world-radius circle
+// (redrawn at each position update, same as the dot marker itself).
+let myLocationAccuracyCircle = null;
+// Google's own blue for the location dot/halo, so this reads as the
+// same familiar "you are here" indicator people already recognize from
+// Google Maps itself.
+const MY_LOCATION_BLUE = "#4285F4";
+
+// Places (or moves) the "you are here" dot + its accuracy halo at
+// latLng -- shared by findMyLocation() and handleWatchPosition() so
+// both draw the exact same look instead of two separate marker styles
+// drifting apart. Mirrors Google's own location-dot design: a small
+// solid circle with a white ring, plus a soft, larger translucent
+// circle around it standing in for GPS accuracy.
+function updateMyLocationMarker(latLng) {
+  if (myLocationMarker) myLocationMarker.setMap(null);
+  myLocationMarker = new google.maps.Marker({
+    position: latLng,
+    map,
+    icon: {
+      path: google.maps.SymbolPath.CIRCLE,
+      scale: 8,
+      fillColor: MY_LOCATION_BLUE,
+      fillOpacity: 1,
+      strokeColor: "#ffffff",
+      strokeWeight: 2,
+    },
+    title: "You are here",
+    zIndex: 999,
+  });
+
+  if (myLocationAccuracyCircle) myLocationAccuracyCircle.setMap(null);
+  myLocationAccuracyCircle = new google.maps.Circle({
+    map,
+    center: latLng,
+    radius: 100,  // meters -- a fixed, modest halo rather than the
+                   // device's actual reported accuracy, which can swing
+                   // widely and make the halo jump around distractingly
+    strokeColor: MY_LOCATION_BLUE,
+    strokeOpacity: 0.35,
+    strokeWeight: 1,
+    fillColor: MY_LOCATION_BLUE,
+    fillOpacity: 0.15,
+    clickable: false,
+    zIndex: 998,
+  });
+}
 
 function polygonRingContainsPoint(dataPolygon, point) {
   // dataPolygon is a google.maps.Data.Polygon: getArray() -> LinearRing[].
@@ -748,21 +789,7 @@ function findMyLocation() {
       const latLng = new google.maps.LatLng(
         position.coords.latitude, position.coords.longitude);
 
-      if (myLocationMarker) myLocationMarker.setMap(null);
-      myLocationMarker = new google.maps.Marker({
-        position: latLng,
-        map,
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          scale: 8,
-          fillColor: "#ff3b30",
-          fillOpacity: 1,
-          strokeColor: "#ffffff",
-          strokeWeight: 2,
-        },
-        title: "You are here",
-        zIndex: 999,
-      });
+      updateMyLocationMarker(latLng);
 
       map.panTo(latLng);
       map.setZoom(15);
@@ -842,21 +869,7 @@ function handleWatchPosition(position) {
   const latLng = new google.maps.LatLng(
     position.coords.latitude, position.coords.longitude);
 
-  if (myLocationMarker) myLocationMarker.setMap(null);
-  myLocationMarker = new google.maps.Marker({
-    position: latLng,
-    map,
-    icon: {
-      path: google.maps.SymbolPath.CIRCLE,
-      scale: 8,
-      fillColor: "#ff3b30",
-      fillOpacity: 1,
-      strokeColor: "#ffffff",
-      strokeWeight: 2,
-    },
-    title: "You are here",
-    zIndex: 999,
-  });
+  updateMyLocationMarker(latLng);
 
   // Keeps the map actually following your position on EVERY ping, not
   // just when you cross into a new county -- otherwise between area
@@ -973,7 +986,7 @@ document.getElementById("location-watch-toggle").addEventListener("change", (eve
     // (rather than waiting for the first GPS fix to come back and
     // trigger it) so turning tracking on feels responsive even before
     // a location shows up.
-    if (map.getZoom() < 13) map.setZoom(13);
+    if (map.getZoom() < 10) map.setZoom(10);
   } else {
     stopLocationWatch();
   }
