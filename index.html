@@ -438,15 +438,21 @@ function applyStyling() {
   });
 
   if (!multiAreaLayer) return;
+  // Unlike a regular area, a multi-area is an overlay that deliberately
+  // spans across (or alongside) a region's own areas -- it isn't a
+  // member of that region's "focused vs. collapsed" grouping the way a
+  // regular area is. So its outline always shows at full weight,
+  // regardless of whether its parent region happens to be the one
+  // currently selected/highlighted. Selecting the multi-area ITSELF
+  // still bumps it up further, so clicking it in the sidebar remains
+  // visibly distinct from just seeing it passively outlined.
   multiAreaLayer.forEach((feature) => {
     const areaName = feature.getProperty("grp");
-    const isSelected = !!(selection &&
-      ((selection.type === "area" && selection.name === areaName) ||
-       (selection.type === "region" && Object.keys(regionAreaColors[selection.name] || {}).includes(areaName))));
+    const isDirectlySelected = !!(selection && selection.type === "area" && selection.name === areaName);
     multiAreaLayer.overrideStyle(feature, {
       fillOpacity: 0,
       strokeColor: multiAreaColorByName[areaName] || "#000000",
-      strokeWeight: isSelected ? 4 : 2,
+      strokeWeight: isDirectlySelected ? 5 : 4,
       clickable: false,
     });
   });
