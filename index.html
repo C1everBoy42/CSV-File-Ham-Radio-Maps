@@ -86,6 +86,14 @@
   #info-window-content { font-size: 13px; }
   #info-window-content b { display: block; margin-bottom: 2px; }
 
+  #locate-me-control {
+    width: 44px; height: 44px; margin: 0 12px 14px 0; border-radius: 50%;
+    border: 3px solid #ffffff; background: #ff3b30; cursor: pointer; padding: 0;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+  }
+  #locate-me-control:hover { background: #e5342a; }
+  #locate-me-control:active { background: #cc2e25; }
+
   #sidebar-toggle-btn {
     display: none; position: absolute; top: 12px; left: 12px; z-index: 20;
     width: 44px; height: 44px; border-radius: 8px; border: none;
@@ -335,6 +343,17 @@ function initMap() {
     zoom: 5,
     mapTypeControl: false,
     streetViewControl: false,
+    fullscreenControl: false,
+    rotateControl: false,
+    zoomControl: false,  // no on-screen zoom buttons at all now (a custom
+                          // +/- control used to live here but was removed
+                          // as redundant once the locate/track button
+                          // below handles "zoom in if too far out") --
+                          // pinch and scroll-wheel zoom still work fine,
+                          // this only affects on-screen buttons. Every
+                          // other native control (pan/compass, fullscreen,
+                          // rotate) stays off too, so the only thing in
+                          // that corner is our own locate-me button.
   });
 
   countiesLayer = new google.maps.Data({ map });
@@ -347,22 +366,7 @@ function initMap() {
   // styling on every zoom change so the fade actually updates live.
   map.addListener("zoom_changed", () => applyStyling());
 
-  // Touching either native zoom button (bottom-right by default) is
-  // treated as "I want to look around near here right now" -- so it
-  // also starts location tracking automatically if it isn't already
-  // running, and nudges the zoom in if it's still too far out to be a
-  // useful "where am I" view. There's no dedicated Maps API event for
-  // "the zoom control was touched" (zoom_changed alone doesn't
-  // distinguish user taps from our own programmatic setZoom() calls),
-  // so this hooks the actual native buttons directly by their
-  // aria-label -- Google Maps renders them with those labels for
-  // accessibility, but they don't exist in the DOM until the map has
-  // finished its first render, hence waiting for "idle" once.
-  google.maps.event.addListenerOnce(map, "idle", () => {
-    document.querySelectorAll(
-      '#map button[aria-label="Zoom in"], #map button[aria-label="Zoom out"]'
-    ).forEach((btn) => btn.addEventListener("click", onZoomControlTouched));
-  });
+  setUpLocateMeControl();
 
   fetch(COUNTIES_GEOJSON_URL)
     .then((r) => r.json())
@@ -384,21 +388,31 @@ function initMap() {
   });
 }
 
-// See the "idle" hook in initMap() -- fires when either native zoom
-// button is touched. Turning tracking on this way mirrors exactly what
-// checking the "Notify me..." checkbox does (see its own change
-// listener below), just triggered from the zoom control instead. The
-// zoom-in nudge runs a beat after the click so it applies on top of
-// whatever the zoom button itself just did, rather than racing it.
-function onZoomControlTouched() {
-  const toggle = document.getElementById("location-watch-toggle");
-  if (toggle && !toggle.checked) {
-    toggle.checked = true;
-    startLocationWatch();
-  }
-  setTimeout(() => {
-    if (map.getZoom() < 10) map.setZoom(13);
-  }, 300);
+// A plain red dot button (matching the "You are here" marker's own
+// color/style), sitting alone in the very bottom-right corner of the
+// map -- pressing it starts location tracking (same as checking
+// "Notify me...") and brings the zoom in to a useful level, but ONLY if
+// you're currently zoomed out past that level. If you're already closer
+// than that, it leaves the zoom exactly where it is rather than forcing
+// it to some fixed number -- "zoom in if too far out", never "zoom out
+// if already close".
+function setUpLocateMeControl() {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.id = "locate-me-control";
+  btn.setAttribute("aria-label", "Track my location");
+  btn.title = "Track my location";
+
+  btn.addEventListener("click", () => {
+    const toggle = document.getElementById("location-watch-toggle");
+    if (toggle && !toggle.checked) {
+      toggle.checked = true;
+      startLocationWatch();
+    }
+    if (map.getZoom() < 13) map.setZoom(13);
+  });
+
+  map.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(btn);
 }
 
 // Builds one dissolved (interior-boundaries-removed) outline per
@@ -926,6 +940,12 @@ function stopLocationWatch() {
 document.getElementById("location-watch-toggle").addEventListener("change", (event) => {
   if (event.target.checked) {
     startLocationWatch();
+    // Nudge the zoom in right away if the map is currently too far out
+    // to be a useful "where am I" view -- checked immediately here
+    // (rather than waiting for the first GPS fix to come back and
+    // trigger it) so turning tracking on feels responsive even before
+    // a location shows up.
+    if (map.getZoom() < 13) map.setZoom(13);
   } else {
     stopLocationWatch();
   }
