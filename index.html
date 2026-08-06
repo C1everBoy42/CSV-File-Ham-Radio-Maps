@@ -402,9 +402,18 @@ function featureStyle(feature) {
   const multiMatch = matches.find((m) => m.type === "multiarea");
   const fillMatch = areaMatch || multiMatch;
 
-  const isFocused = !selection || matches.some((m) =>
+  // isFocused now requires an ACTUAL selection naming this region/area --
+  // with nothing selected, isFocused is false for everything, so every
+  // loaded region defaults to its single unified color (regionColorByName)
+  // rather than each area's individual color. That's what keeps multiple
+  // loaded regions visually distinct as clean blocks instead of a
+  // patchwork the moment they're loaded, with no click required.
+  // Selecting a region/area is what "expands" it to show its own areas'
+  // individual colors -- every OTHER region stays collapsed to its one
+  // unified color the whole time.
+  const isFocused = !!(selection && matches.some((m) =>
     (selection.type === "region" && m.region === selection.name) ||
-    (selection.type === "area" && m.area === selection.name));
+    (selection.type === "area" && m.area === selection.name)));
 
   // Multi-area overlap is no longer signaled with a bold per-county
   // stroke here -- that drew the multi-area's color on every internal
@@ -412,20 +421,12 @@ function featureStyle(feature) {
   // dissolved, single-outline version is drawn on top by
   // multiAreaLayer instead (see renderMultiAreaOutlines()), so this
   // just needs the area's own normal boundary.
-  //
-  // Selecting a region/area focuses it -- its own areas keep their
-  // individual per-area colors (higher opacity, thicker border) so its
-  // internal breakdown is visible. Every OTHER region collapses down to
-  // ONE unified color for all its areas (regionColorByName), so at a
-  // glance it reads as a single distinct region rather than a patchwork
-  // of area colors competing with the focused one. With nothing
-  // selected at all, every region shows its normal per-area colors.
   const displayColor = isFocused ? fillMatch.color : (regionColorByName[fillMatch.region] || fillMatch.color);
   return {
     fillColor: displayColor,
-    fillOpacity: isFocused ? (selection ? 0.75 : 0.55) : 0.55,
+    fillOpacity: isFocused ? 0.75 : 0.55,
     strokeColor: displayColor,
-    strokeWeight: isFocused && selection ? 2 : 1,
+    strokeWeight: isFocused ? 2 : 1,
     clickable: true,
   };
 }
@@ -439,9 +440,9 @@ function applyStyling() {
   if (!multiAreaLayer) return;
   multiAreaLayer.forEach((feature) => {
     const areaName = feature.getProperty("grp");
-    const isSelected = !selection ||
-      (selection.type === "area" && selection.name === areaName) ||
-      (selection.type === "region" && Object.keys(regionAreaColors[selection.name] || {}).includes(areaName));
+    const isSelected = !!(selection &&
+      ((selection.type === "area" && selection.name === areaName) ||
+       (selection.type === "region" && Object.keys(regionAreaColors[selection.name] || {}).includes(areaName))));
     multiAreaLayer.overrideStyle(feature, {
       fillOpacity: 0,
       strokeColor: multiAreaColorByName[areaName] || "#000000",
@@ -1393,11 +1394,22 @@ async function deleteSavedMap(name) {
   renderSavedMapsList();
 }
 
+// Guards against a duplicate-rows race: renderSavedMapsList() gets
+// called from several places (login, save, load, delete) and each one
+// awaits a Firestore round-trip before it can rebuild the list. If two
+// calls overlap, the container gets cleared once but appended to twice
+// -- whichever call resolves LAST wins and is the only one allowed to
+// actually touch the DOM; a stale, superseded call just discards its
+// results instead of appending duplicate rows on top.
+let savedMapsRenderToken = 0;
+
 async function renderSavedMapsList() {
+  const myToken = ++savedMapsRenderToken;
   const container = document.getElementById("saved-maps-list");
-  container.innerHTML = "";
 
   if (!currentUser) {
+    if (myToken !== savedMapsRenderToken) return;
+    container.innerHTML = "";
     const empty = document.createElement("div");
     empty.id = "no-saved-maps";
     empty.textContent = "Log in to save and load maps tied to your account.";
@@ -1411,12 +1423,17 @@ async function renderSavedMapsList() {
     clearSyncError();
   } catch (e) {
     showSyncError("Couldn't load your saved maps list", e);
+    if (myToken !== savedMapsRenderToken) return;
+    container.innerHTML = "";
     const errEl = document.createElement("div");
     errEl.id = "no-saved-maps";
     errEl.textContent = "Couldn't load saved maps -- see error above.";
     container.appendChild(errEl);
     return;
   }
+  if (myToken !== savedMapsRenderToken) return;  // a newer call has since started -- don't render stale results
+  container.innerHTML = "";
+
   if (snapshot.empty) {
     const empty = document.createElement("div");
     empty.id = "no-saved-maps";
