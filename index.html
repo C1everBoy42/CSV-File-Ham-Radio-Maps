@@ -407,38 +407,34 @@ function featureStyle(feature) {
   const multiMatch = matches.find((m) => m.type === "multiarea");
   const fillMatch = areaMatch || multiMatch;
 
-  // isFocused now requires an ACTUAL selection naming this region/area --
-  // with nothing selected, isFocused is false for everything, so every
-  // loaded region defaults to its single unified color (regionColorByName)
-  // rather than each area's individual color. That's what keeps multiple
-  // loaded regions visually distinct as clean blocks instead of a
-  // patchwork the moment they're loaded, with no click required.
-  // Selecting a region/area is what "expands" it to show its own areas'
-  // individual colors -- every OTHER region stays collapsed to its one
-  // unified color the whole time.
-  const isFocused = !!(selection && matches.some((m) =>
-    (selection.type === "region" && m.region === selection.name) ||
-    (selection.type === "area" && m.area === selection.name)));
+  // Region-level color is now unconditional -- a REGION selection only
+  // ever highlights (higher opacity / thicker border), it no longer
+  // "expands" the region into its areas' individual colors, since that
+  // kept reading as a patchwork rather than a clean single-color region
+  // no matter how the focus rules were tuned. The ONLY way to see one
+  // specific area's own true color is to select that area BY NAME --
+  // its region-mates and every other loaded region all stay collapsed
+  // to their one unified color regardless.
+  const isAreaSelected = !!(selection && selection.type === "area" &&
+    matches.some((m) => m.area === selection.name));
+  const isRegionSelected = !!(selection && selection.type === "region" &&
+    matches.some((m) => m.region === selection.name));
+  const isSelected = isAreaSelected || isRegionSelected;
 
-  // The "collapse to one unified region color" treatment only makes
-  // sense for a county that actually belongs to a real member area of a
-  // region -- it's THAT area's individual color competing for space with
-  // every other loaded region that gets muted down. A county with NO
-  // regular area underneath (only a multi-area claims it, so fillMatch
-  // fell through to multiMatch) isn't part of that competition at all;
-  // it always shows its own true color at full strength, same as before
-  // multi-region unification existed. When there IS a regular area
-  // underneath, the multi-area itself never provides the fill anyway
-  // (see fillMatch above) -- it only contributes its outline via
-  // multiAreaLayer/renderMultiAreaOutlines(), which is already always
-  // shown regardless of focus.
-  const showTrueColor = isFocused || !areaMatch;
+  // A county with NO regular area underneath (only a multi-area claims
+  // it) isn't part of any region's collapse to begin with -- it always
+  // shows its own true color at full strength, same as a directly
+  // area-selected county does. When there IS a regular area underneath,
+  // the multi-area itself never provides the fill anyway (see fillMatch
+  // above) -- it only contributes its outline via multiAreaLayer, whose
+  // own color rule mirrors this same logic (see restyleMultiAreaLayer).
+  const showTrueColor = isAreaSelected || !areaMatch;
   const displayColor = showTrueColor ? fillMatch.color : (regionColorByName[fillMatch.region] || fillMatch.color);
   return {
     fillColor: displayColor,
-    fillOpacity: showTrueColor ? 0.75 : 0.55,
+    fillOpacity: isSelected ? 0.75 : 0.55,
     strokeColor: displayColor,
-    strokeWeight: showTrueColor ? 2 : 1,
+    strokeWeight: isSelected ? 2 : 1,
     clickable: true,
   };
 }
@@ -458,12 +454,14 @@ function applyStyling() {
 // region color unless focused" rule as everything else in that region,
 // same as featureStyle() does for regular areas. A multi-area that's
 // genuinely part of a region (overlaps at least one of that region's
-// real areas somewhere) blends into that region's unified color while
-// the region isn't focused, and only shows its own true color once that
-// region (or the multi-area itself) IS focused. A fully standalone
-// multi-area (nothing underneath it anywhere) always keeps its own true
-// color, same as a standalone county fill does in featureStyle() -- it
-// was never part of any region's collapse to begin with.
+// real areas somewhere) blends into that region's unified color, and
+// only shows its own true color once the multi-area ITSELF is directly
+// selected by name -- selecting its parent REGION no longer un-collapses
+// it either (matching featureStyle()'s region selections: highlight
+// only, never a color reveal). A fully standalone multi-area (nothing
+// underneath it anywhere) always keeps its own true color, same as a
+// standalone county fill does in featureStyle() -- it was never part of
+// any region's collapse to begin with.
 //
 // This is a standalone function (not inlined into applyStyling()) so
 // renderMultiAreaOutlines() can call the SAME logic right after it
@@ -477,12 +475,8 @@ function restyleMultiAreaLayer() {
     const areaName = feature.getProperty("grp");
     const region = multiAreaRegionByName[areaName];
     const isDirectlySelected = !!(selection && selection.type === "area" && selection.name === areaName);
-    const isRegionFocused = !!(selection && (
-      (selection.type === "region" && selection.name === region) ||
-      (selection.type === "area" && region &&
-       Object.prototype.hasOwnProperty.call(regionAreaColors[region] || {}, selection.name))));
     const hasRegionOverlap = !!multiAreaHasRegionOverlap[areaName];
-    const showTrueColor = isDirectlySelected || isRegionFocused || !hasRegionOverlap;
+    const showTrueColor = isDirectlySelected || !hasRegionOverlap;
     const ownColor = multiAreaColorByName[areaName] || "#000000";
     const strokeColor = showTrueColor ? ownColor : (regionColorByName[region] || ownColor);
     multiAreaLayer.overrideStyle(feature, {
