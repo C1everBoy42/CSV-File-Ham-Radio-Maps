@@ -244,6 +244,13 @@ let countyFeaturesByKey = {};
 // read back by applyStyling() when re-styling multiAreaLayer on
 // selection change.
 let multiAreaColorByName = {};
+// multi-area name -> the region it's linked to (from its own CSV rows)
+let multiAreaRegionByName = {};
+// multi-area name -> true if ANY of its counties also belong to a real
+// member area of a region (i.e. it's genuinely "part of" that region,
+// as opposed to a fully standalone multi-area with nothing underneath
+// it anywhere). Both set by renderMultiAreaOutlines().
+let multiAreaHasRegionOverlap = {};
 // key: "normalizedcounty|ST" -> { area, region, color }
 let csvLookup = {};
 // region -> { area -> color }
@@ -313,12 +320,18 @@ function renderMultiAreaOutlines() {
   // separate CSV rows, but its shape is the same either way).
   const countiesByMultiArea = {};
   multiAreaColorByName = {};
+  multiAreaRegionByName = {};
+  multiAreaHasRegionOverlap = {};
   for (const key in csvLookup) {
-    for (const m of csvLookup[key]) {
+    const entries = csvLookup[key];
+    const areaMatch = entries.find((m) => m.type === "area");
+    for (const m of entries) {
       if (m.type !== "multiarea") continue;
       if (!countiesByMultiArea[m.area]) countiesByMultiArea[m.area] = new Set();
       countiesByMultiArea[m.area].add(key);
       multiAreaColorByName[m.area] = m.color;
+      if (!multiAreaRegionByName[m.area]) multiAreaRegionByName[m.area] = m.region;
+      if (areaMatch) multiAreaHasRegionOverlap[m.area] = true;
     }
   }
 
@@ -364,15 +377,7 @@ function renderMultiAreaOutlines() {
     }
   }
 
-  multiAreaLayer.forEach((feature) => {
-    const areaName = feature.getProperty("grp");
-    multiAreaLayer.overrideStyle(feature, {
-      fillOpacity: 0,
-      strokeColor: multiAreaColorByName[areaName] || "#000000",
-      strokeWeight: 4,
-      clickable: false,
-    });
-  });
+  restyleMultiAreaLayer();
 }
 
 function featureStyle(feature) {
@@ -444,21 +449,45 @@ function applyStyling() {
     countiesLayer.overrideStyle(feature, featureStyle(feature));
   });
 
+  restyleMultiAreaLayer();
+}
+
+// The outline's WEIGHT always stays visible regardless of focus (a
+// multi-area's boundary shouldn't disappear just because its region
+// collapsed) -- but its COLOR now follows the same "collapse to one
+// region color unless focused" rule as everything else in that region,
+// same as featureStyle() does for regular areas. A multi-area that's
+// genuinely part of a region (overlaps at least one of that region's
+// real areas somewhere) blends into that region's unified color while
+// the region isn't focused, and only shows its own true color once that
+// region (or the multi-area itself) IS focused. A fully standalone
+// multi-area (nothing underneath it anywhere) always keeps its own true
+// color, same as a standalone county fill does in featureStyle() -- it
+// was never part of any region's collapse to begin with.
+//
+// This is a standalone function (not inlined into applyStyling()) so
+// renderMultiAreaOutlines() can call the SAME logic right after it
+// rebuilds the layer, instead of a second, simpler copy that used to
+// live there and would unconditionally overwrite whatever applyStyling()
+// had just set with "always full color, always weight 4" -- which was
+// exactly the "outline should be a unified color when not selected" bug.
+function restyleMultiAreaLayer() {
   if (!multiAreaLayer) return;
-  // Unlike a regular area, a multi-area is an overlay that deliberately
-  // spans across (or alongside) a region's own areas -- it isn't a
-  // member of that region's "focused vs. collapsed" grouping the way a
-  // regular area is. So its outline always shows at full weight,
-  // regardless of whether its parent region happens to be the one
-  // currently selected/highlighted. Selecting the multi-area ITSELF
-  // still bumps it up further, so clicking it in the sidebar remains
-  // visibly distinct from just seeing it passively outlined.
   multiAreaLayer.forEach((feature) => {
     const areaName = feature.getProperty("grp");
+    const region = multiAreaRegionByName[areaName];
     const isDirectlySelected = !!(selection && selection.type === "area" && selection.name === areaName);
+    const isRegionFocused = !!(selection && (
+      (selection.type === "region" && selection.name === region) ||
+      (selection.type === "area" && region &&
+       Object.prototype.hasOwnProperty.call(regionAreaColors[region] || {}, selection.name))));
+    const hasRegionOverlap = !!multiAreaHasRegionOverlap[areaName];
+    const showTrueColor = isDirectlySelected || isRegionFocused || !hasRegionOverlap;
+    const ownColor = multiAreaColorByName[areaName] || "#000000";
+    const strokeColor = showTrueColor ? ownColor : (regionColorByName[region] || ownColor);
     multiAreaLayer.overrideStyle(feature, {
       fillOpacity: 0,
-      strokeColor: multiAreaColorByName[areaName] || "#000000",
+      strokeColor,
       strokeWeight: isDirectlySelected ? 5 : 4,
       clickable: false,
     });
