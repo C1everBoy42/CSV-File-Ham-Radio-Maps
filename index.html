@@ -391,11 +391,14 @@ function initMap() {
 // A plain red dot button (matching the "You are here" marker's own
 // color/style), sitting alone in the very bottom-right corner of the
 // map -- pressing it starts location tracking (same as checking
-// "Notify me...") and brings the zoom in to a useful level, but ONLY if
-// you're currently zoomed out past that level. If you're already closer
-// than that, it leaves the zoom exactly where it is rather than forcing
-// it to some fixed number -- "zoom in if too far out", never "zoom out
-// if already close".
+// "Notify me...") AND immediately fetches your current position to pan
+// the map there, zooming in to a useful level only if you're currently
+// zoomed out past that (never zooms back OUT if you're already close).
+// Fetching the position directly here (rather than just relying on the
+// background watch to eventually fire) matters because if tracking was
+// ALREADY on, starting it again is a no-op -- the button would zoom in
+// place without ever actually panning to where you are, which is the
+// whole point of a locate button.
 function setUpLocateMeControl() {
   const btn = document.createElement("button");
   btn.type = "button";
@@ -409,7 +412,32 @@ function setUpLocateMeControl() {
       toggle.checked = true;
       startLocationWatch();
     }
-    if (map.getZoom() < 13) map.setZoom(13);
+
+    const zoomInIfNeeded = () => {
+      if (map.getZoom() < 13) map.setZoom(13);
+    };
+
+    if (!navigator.geolocation) {
+      zoomInIfNeeded();
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const latLng = new google.maps.LatLng(
+          position.coords.latitude, position.coords.longitude);
+        map.panTo(latLng);
+        zoomInIfNeeded();
+      },
+      () => {
+        // Couldn't get a fresh fix (permission denied, timeout, etc.) --
+        // fall back to the last known "You are here" marker position if
+        // the background watch already placed one, so the button still
+        // does SOMETHING useful instead of just zooming blindly.
+        if (myLocationMarker) map.panTo(myLocationMarker.getPosition());
+        zoomInIfNeeded();
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 }
+    );
   });
 
   map.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(btn);
