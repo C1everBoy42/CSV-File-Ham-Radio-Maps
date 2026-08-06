@@ -399,12 +399,30 @@ function initMap() {
 // zooming in to level 10 if you're currently zoomed out PAST that.
 // Never zooms in any FURTHER than 10 through this button, and never
 // zooms out if you're already closer than that -- 10 is just the floor.
+// It also looks up and shows which area/region that position falls in,
+// via the same floating banner a manual area/region selection uses --
+// which already has its own X to dismiss it (see renderSelectionBanner).
 function setUpLocateMeControl() {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.id = "locate-me-control";
   btn.setAttribute("aria-label", "Track my location");
   btn.title = "Track my location";
+
+  const showAreaAtPoint = (latLng) => {
+    if (!countiesLayer) return;
+    const found = findCountyKeyAtPoint(latLng);
+    if (!found) return;
+    const matches = csvLookup[found.key];
+    if (!matches || matches.length === 0) return;
+    const match = matches.find((m) => m.type === "area") || matches[0];
+    selection = { type: "area", name: match.area };
+    applyStyling();
+    renderSidebarList();
+    renderRepeaterMarkers();
+    document.getElementById("clear-selection-btn").style.display = "inline-block";
+    renderSelectionBanner();
+  };
 
   btn.addEventListener("click", () => {
     const toggle = document.getElementById("location-watch-toggle");
@@ -420,13 +438,18 @@ function setUpLocateMeControl() {
           position.coords.latitude, position.coords.longitude);
         map.panTo(latLng);
         if (map.getZoom() < 10) map.setZoom(10);
+        showAreaAtPoint(latLng);
       },
       () => {
         // Couldn't get a fresh fix (permission denied, timeout, etc.) --
         // fall back to the last known "You are here" marker position if
         // the background watch already placed one, so the button still
         // does SOMETHING useful.
-        if (myLocationMarker) map.panTo(myLocationMarker.getPosition());
+        if (myLocationMarker) {
+          const lastLatLng = myLocationMarker.getPosition();
+          map.panTo(lastLatLng);
+          showAreaAtPoint(lastLatLng);
+        }
         if (map.getZoom() < 10) map.setZoom(10);
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 }
