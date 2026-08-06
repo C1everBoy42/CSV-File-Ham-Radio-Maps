@@ -347,6 +347,23 @@ function initMap() {
   // styling on every zoom change so the fade actually updates live.
   map.addListener("zoom_changed", () => applyStyling());
 
+  // Touching either native zoom button (bottom-right by default) is
+  // treated as "I want to look around near here right now" -- so it
+  // also starts location tracking automatically if it isn't already
+  // running, and nudges the zoom in if it's still too far out to be a
+  // useful "where am I" view. There's no dedicated Maps API event for
+  // "the zoom control was touched" (zoom_changed alone doesn't
+  // distinguish user taps from our own programmatic setZoom() calls),
+  // so this hooks the actual native buttons directly by their
+  // aria-label -- Google Maps renders them with those labels for
+  // accessibility, but they don't exist in the DOM until the map has
+  // finished its first render, hence waiting for "idle" once.
+  google.maps.event.addListenerOnce(map, "idle", () => {
+    document.querySelectorAll(
+      '#map button[aria-label="Zoom in"], #map button[aria-label="Zoom out"]'
+    ).forEach((btn) => btn.addEventListener("click", onZoomControlTouched));
+  });
+
   fetch(COUNTIES_GEOJSON_URL)
     .then((r) => r.json())
     .then((geojson) => {
@@ -365,6 +382,23 @@ function initMap() {
   countiesLayer.addListener("click", (event) => {
     showInfoForFeature(event);
   });
+}
+
+// See the "idle" hook in initMap() -- fires when either native zoom
+// button is touched. Turning tracking on this way mirrors exactly what
+// checking the "Notify me..." checkbox does (see its own change
+// listener below), just triggered from the zoom control instead. The
+// zoom-in nudge runs a beat after the click so it applies on top of
+// whatever the zoom button itself just did, rather than racing it.
+function onZoomControlTouched() {
+  const toggle = document.getElementById("location-watch-toggle");
+  if (toggle && !toggle.checked) {
+    toggle.checked = true;
+    startLocationWatch();
+  }
+  setTimeout(() => {
+    if (map.getZoom() < 10) map.setZoom(13);
+  }, 300);
 }
 
 // Builds one dissolved (interior-boundaries-removed) outline per
