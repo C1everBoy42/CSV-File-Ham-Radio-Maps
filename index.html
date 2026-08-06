@@ -754,6 +754,29 @@ function handleWatchPosition(position) {
     announceAreaChange(text);
     lastWatchedAreaName = match.area;
     lastWatchedRegionName = match.region;
+
+    // Surface the newly-entered area the same way tapping it would --
+    // updates the map coloring, the sidebar's highlighted row, and the
+    // floating "Area — Region" banner over the map, so it's visible at
+    // a glance without needing to touch the phone while driving.
+    // Deliberately does NOT fitBounds() to the whole area's shape like
+    // a manual tap does -- re-fitting the zoom to a potentially huge
+    // area's full extent every time a boundary is crossed would yank
+    // the view around while driving. Instead it just gently recenters
+    // on the current position, and only nudges the zoom level if it's
+    // currently too far out to be useful for someone on the move.
+    selection = { type: "area", name: match.area };
+    applyStyling();
+    renderSidebarList();
+    renderRepeaterMarkers();
+    document.getElementById("clear-selection-btn").style.display = "inline-block";
+    renderSelectionBanner();
+    map.panTo(latLng);
+    if (map.getZoom() < 8) map.setZoom(10);
+    // If the sidebar happened to be open (unlikely while driving, but
+    // possible), close it so the highlighted map/banner are actually
+    // visible instead of hidden behind the drawer.
+    if (window.innerWidth <= 700) closeSidebar();
   }
 }
 
@@ -1281,14 +1304,32 @@ function fitBoundsToSelection(sel) {
   if (found) map.fitBounds(bounds);
 }
 
+// Finds which region an area belongs to by scanning the loaded data --
+// used so the banner can show "Area — Region" together even when only
+// the area name is known (e.g. from the location watch, which matches
+// on area first).
+function findRegionForArea(areaName) {
+  for (const key in csvLookup) {
+    const m = csvLookup[key].find((e) => e.area === areaName);
+    if (m) return m.region;
+  }
+  return null;
+}
+
 function renderSelectionBanner() {
   const banner = document.getElementById("selection-banner");
   if (!selection) {
     banner.classList.remove("open");
     return;
   }
-  document.getElementById("selection-banner-text").textContent =
-    (selection.type === "region" ? "Region: " : "Area: ") + selection.name;
+  let text;
+  if (selection.type === "region") {
+    text = "Region: " + selection.name;
+  } else {
+    const region = findRegionForArea(selection.name);
+    text = selection.name + (region ? " \u2014 " + region : "");
+  }
+  document.getElementById("selection-banner-text").textContent = text;
   banner.classList.add("open");
 }
 
