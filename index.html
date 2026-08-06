@@ -340,6 +340,13 @@ function initMap() {
   countiesLayer = new google.maps.Data({ map });
   multiAreaLayer = new google.maps.Data({ map });
 
+  // Fill opacity fades as you zoom in (see zoomAdjustedOpacity in
+  // featureStyle()) so roads and local map detail become visible
+  // instead of staying buried under a solid color block once you're
+  // zoomed in close enough for that detail to matter. Re-applies the
+  // styling on every zoom change so the fade actually updates live.
+  map.addListener("zoom_changed", () => applyStyling());
+
   fetch(COUNTIES_GEOJSON_URL)
     .then((r) => r.json())
     .then((geojson) => {
@@ -501,11 +508,30 @@ function featureStyle(feature) {
   const displayColor = isSelected ? fillMatch.color : (regionColorByName[fillMatch.region] || fillMatch.color);
   return {
     fillColor: displayColor,
-    fillOpacity: isSelected ? 0.75 : 0.55,
+    fillOpacity: zoomAdjustedOpacity(isSelected ? 0.75 : 0.55),
     strokeColor: displayColor,
     strokeWeight: isSelected ? 2 : 1,
     clickable: true,
   };
+}
+
+// Fades a base fill opacity down as the map zooms in, so once you're
+// zoomed in close enough that road names, small towns, and local detail
+// actually matter, the color fill isn't sitting fully opaque on top of
+// them. Stays at full baseOpacity while zoomed out (looking at a whole
+// region/state), where solid, confident block colors matter more than
+// seeing street-level detail underneath.
+function zoomAdjustedOpacity(baseOpacity) {
+  if (!map) return baseOpacity;
+  const zoom = map.getZoom();
+  if (typeof zoom !== "number") return baseOpacity;
+  const fadeStart = 8;   // opacity stays at full baseOpacity through here
+  const fadeEnd = 14;    // opacity reaches its floor by here
+  const floorFactor = 0.4;  // never fades below 40% of baseOpacity
+  if (zoom <= fadeStart) return baseOpacity;
+  if (zoom >= fadeEnd) return baseOpacity * floorFactor;
+  const t = (zoom - fadeStart) / (fadeEnd - fadeStart);
+  return baseOpacity * (1 - t * (1 - floorFactor));
 }
 
 function applyStyling() {
