@@ -855,6 +855,16 @@ function showInfoForFeature(event) {
     position: event.latLng,
   });
   infoWindow.open(map);
+
+  // Clicking a colored region directly on the map selects that region
+  // the same way clicking its name in the sidebar does -- which reveals
+  // (expands) its area list there. On mobile the sidebar drawer is
+  // opened too, since that expanded area list is otherwise hidden
+  // behind it -- tapping a region on the map is exactly the "show me
+  // what's in this region" gesture the sidebar's own region click
+  // handles, just triggered from the map side instead.
+  selectRegion(match.region);
+  if (window.innerWidth <= 700) openSidebar();
 }
 
 // Extracts "Cullman" and "AL" out of a CHIRP Comment field formatted as
