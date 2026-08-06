@@ -1300,7 +1300,13 @@ function selectRegion(name) {
   renderRepeaterMarkers();
   document.getElementById("clear-selection-btn").style.display = "inline-block";
   renderSelectionBanner();
-  if (window.innerWidth <= 700) closeSidebar();
+  // Deliberately does NOT auto-close the sidebar on mobile like
+  // selectArea() does -- tapping a region expands it to reveal its
+  // areas (see the header click handler in renderSidebarList()), and
+  // closing the drawer immediately would hide that list again before
+  // there was any chance to see or tap into it. The region still zooms/
+  // highlights on the map underneath; picking a specific AREA (or
+  // tapping the dark overlay) is what actually dismisses the drawer.
 }
 
 function selectArea(name) {
