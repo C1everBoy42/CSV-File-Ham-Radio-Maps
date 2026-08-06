@@ -271,8 +271,16 @@ let countyFeaturesByKey = {};
 // read back by applyStyling() when re-styling multiAreaLayer on
 // selection change.
 let multiAreaColorByName = {};
-// multi-area name -> the region it's linked to (from its own CSV rows)
-let multiAreaRegionByName = {};
+// multi-area name -> Set of every region it's linked to across ALL
+// loaded CSVs. A multi-area like Chattanooga TN can genuinely appear in
+// more than one region's export file (it's linked to both East TN and
+// North AL Central TN Chatt, say) -- when that happens it doesn't
+// cleanly "belong" to just one region's collapse, so restyleMultiAreaLayer()
+// treats anything with more than one entry here as always-true-color
+// (see multiAreaLinkedToMultipleRegions below) rather than guessing
+// which single region's unified color it should blend into.
+let multiAreaRegionsByName = {};
+let multiAreaLinkedToMultipleRegions = {};
 // multi-area name -> true if ANY of its counties also belong to a real
 // member area of a region (i.e. it's genuinely "part of" that region,
 // as opposed to a fully standalone multi-area with nothing underneath
@@ -288,16 +296,34 @@ let regionAreaColors = {};
 // colors (which are reserved for whichever region is actually focused).
 // Recomputed in rebuildFromSources() any time the loaded set changes.
 let regionColorByName = {};
-// A separate palette from individual area colors (which come straight
-// from the CSV) -- assigned deterministically by each region's
-// alphabetical position, so the same regions get the same "region
-// color" across reloads as long as the same set is loaded.
+// The same jewel-tone palette region_picker.py's own AREA_COLORS uses,
+// for a consistent look between the desktop app's map and this one.
+// An earlier version deliberately used a different, brighter palette
+// here to dodge collisions with individual area colors -- that's no
+// longer needed now that the actual sources of collision are fixed at
+// the root: region_picker.py assigns each area/multi-area a genuinely
+// unique, persisted color (see _stable_web_app_color), and the picker
+// below also greedily maximizes color DISTANCE from whatever's already
+// in use (not just avoiding exact matches), so reverting to this
+// palette is safe.
 const REGION_COLOR_PALETTE = [
   "#25347E", "#4E7E25", "#7E2569", "#257E7A", "#7E6025", "#46257E",
   "#257E2C", "#7E2538", "#25527E", "#6C7E25", "#76257E", "#257E5C",
   "#7E4225", "#28257E", "#3C7E25", "#7E2556", "#25707E", "#7E7325",
   "#58257E", "#257E3E", "#7E2525", "#25407E", "#5A7E25", "#7E2574",
 ];
+function hexToRgb(hex) {
+  const h = hex.replace("#", "");
+  return [parseInt(h.substr(0, 2), 16), parseInt(h.substr(2, 2), 16), parseInt(h.substr(4, 2), 16)];
+}
+// Plain Euclidean RGB distance -- not perceptually exact, but more than
+// good enough to reliably tell "these two dark blues look the same" from
+// "these two colors look different", which is all this needs.
+function colorDistance(hexA, hexB) {
+  const [r1, g1, b1] = hexToRgb(hexA);
+  const [r2, g2, b2] = hexToRgb(hexB);
+  return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
+}
 // { type: "region"|"area", name: string } or null for no selection
 let selection = null;
 let repeaterMarkers = [];
@@ -347,7 +373,8 @@ function renderMultiAreaOutlines() {
   // separate CSV rows, but its shape is the same either way).
   const countiesByMultiArea = {};
   multiAreaColorByName = {};
-  multiAreaRegionByName = {};
+  multiAreaRegionsByName = {};
+  multiAreaLinkedToMultipleRegions = {};
   multiAreaHasRegionOverlap = {};
   for (const key in csvLookup) {
     const entries = csvLookup[key];
@@ -357,7 +384,9 @@ function renderMultiAreaOutlines() {
       if (!countiesByMultiArea[m.area]) countiesByMultiArea[m.area] = new Set();
       countiesByMultiArea[m.area].add(key);
       multiAreaColorByName[m.area] = m.color;
-      if (!multiAreaRegionByName[m.area]) multiAreaRegionByName[m.area] = m.region;
+      if (!multiAreaRegionsByName[m.area]) multiAreaRegionsByName[m.area] = new Set();
+      multiAreaRegionsByName[m.area].add(m.region);
+      multiAreaLinkedToMultipleRegions[m.area] = multiAreaRegionsByName[m.area].size > 1;
       if (areaMatch) multiAreaHasRegionOverlap[m.area] = true;
     }
   }
@@ -427,36 +456,49 @@ function featureStyle(feature) {
   // The regular area (if any) always provides the FILL -- a Multi
   // Area/Region entry deliberately overlaps a regular area's own
   // counties, so it must never hide the area underneath it. If this
-  // county belongs ONLY to a multi-area (no regular area claims it),
-  // the multi-area's own color is used for the fill instead, same as
-  // a regular area would be.
+  // county belongs ONLY to a multi-area (no regular area claims it), it
+  // gets NO fill at all -- a multi-area is represented purely by its
+  // outline (see multiAreaLayer/restyleMultiAreaLayer), never a solid
+  // color of its own on the county layer, even where nothing else is
+  // underneath it.
   const areaMatch = matches.find((m) => m.type === "area");
   const multiMatch = matches.find((m) => m.type === "multiarea");
-  const fillMatch = areaMatch || multiMatch;
 
-  // Region-level color is now unconditional -- a REGION selection only
-  // ever highlights (higher opacity / thicker border), it no longer
-  // "expands" the region into its areas' individual colors, since that
-  // kept reading as a patchwork rather than a clean single-color region
-  // no matter how the focus rules were tuned. The ONLY way to see one
-  // specific area's own true color is to select that area BY NAME --
-  // its region-mates and every other loaded region all stay collapsed
-  // to their one unified color regardless.
-  const isAreaSelected = !!(selection && selection.type === "area" &&
-    matches.some((m) => m.area === selection.name));
-  const isRegionSelected = !!(selection && selection.type === "region" &&
-    matches.some((m) => m.region === selection.name));
+  if (!areaMatch) {
+    // Only a multi-area (or nothing) claims this county -- leave the
+    // fill layer blank; multiAreaLayer draws its outline independently
+    // on top, which is the only visual this county should get from it.
+    return {
+      fillColor: "#cccccc",
+      fillOpacity: 0.0,
+      strokeColor: "#999999",
+      strokeWeight: 0.3,
+      clickable: !!multiMatch,
+    };
+  }
+  const fillMatch = areaMatch;
+
+  // A REGION selection now DOES expand into its areas' individual
+  // colors again -- selecting "North AL Central TN Chatt" reveals
+  // Culman AL, Gadsden AL, North AL, etc. each in their own true color,
+  // matching the sidebar's own legend for it. Every OTHER loaded region
+  // (or this region when nothing at all is selected) still collapses to
+  // its single unified color -- that part stays exactly as it was.
+  //
+  // Checked ONLY against fillMatch (the real area), never against
+  // every entry in `matches` -- that used to include a MULTI-AREA row
+  // sharing this county, and a multi-area's own region tag (e.g.
+  // Chattanooga TN tagged "North AL Central TN Chatt" in one of its two
+  // files) has nothing to do with whether the REAL underlying area
+  // (say, East TN's own SE TN) should be considered selected. That was
+  // exactly what let SE TN's true color bleed through East TN's unified
+  // color whenever North AL Central TN Chatt was selected, purely
+  // because they happened to share a county via Chattanooga TN.
+  const isAreaSelected = !!(selection && selection.type === "area" && fillMatch.area === selection.name);
+  const isRegionSelected = !!(selection && selection.type === "region" && fillMatch.region === selection.name);
   const isSelected = isAreaSelected || isRegionSelected;
 
-  // A county with NO regular area underneath (only a multi-area claims
-  // it) isn't part of any region's collapse to begin with -- it always
-  // shows its own true color at full strength, same as a directly
-  // area-selected county does. When there IS a regular area underneath,
-  // the multi-area itself never provides the fill anyway (see fillMatch
-  // above) -- it only contributes its outline via multiAreaLayer, whose
-  // own color rule mirrors this same logic (see restyleMultiAreaLayer).
-  const showTrueColor = isAreaSelected || !areaMatch;
-  const displayColor = showTrueColor ? fillMatch.color : (regionColorByName[fillMatch.region] || fillMatch.color);
+  const displayColor = isSelected ? fillMatch.color : (regionColorByName[fillMatch.region] || fillMatch.color);
   return {
     fillColor: displayColor,
     fillOpacity: isSelected ? 0.75 : 0.55,
@@ -475,40 +517,26 @@ function applyStyling() {
   restyleMultiAreaLayer();
 }
 
-// The outline's WEIGHT always stays visible regardless of focus (a
-// multi-area's boundary shouldn't disappear just because its region
-// collapsed) -- but its COLOR now follows the same "collapse to one
-// region color unless focused" rule as everything else in that region,
-// same as featureStyle() does for regular areas. A multi-area that's
-// genuinely part of a region (overlaps at least one of that region's
-// real areas somewhere) blends into that region's unified color, and
-// only shows its own true color once the multi-area ITSELF is directly
-// selected by name -- selecting its parent REGION no longer un-collapses
-// it either (matching featureStyle()'s region selections: highlight
-// only, never a color reveal). A fully standalone multi-area (nothing
-// underneath it anywhere) always keeps its own true color, same as a
-// standalone county fill does in featureStyle() -- it was never part of
-// any region's collapse to begin with.
-//
-// This is a standalone function (not inlined into applyStyling()) so
-// renderMultiAreaOutlines() can call the SAME logic right after it
-// rebuilds the layer, instead of a second, simpler copy that used to
-// live there and would unconditionally overwrite whatever applyStyling()
-// had just set with "always full color, always weight 4" -- which was
-// exactly the "outline should be a unified color when not selected" bug.
+// A multi-area's outline ALWAYS shows its own true, consistent color
+// (e.g. Chattanooga TN is always brown) -- it no longer tries to blend
+// into whichever region's unified color it happens to sit near when
+// that region isn't focused. That blending logic kept creating new
+// collisions no matter how the region-color picking was tuned (a
+// region's unified color landing near some multi-area's true color,
+// or being ambiguous entirely for a multi-area linked to more than one
+// region, like Chattanooga TN appearing in both East TN's and North AL
+// Central TN Chatt's export files). Always-true-color sidesteps all of
+// that: the outline means the same thing everywhere on the map, all
+// the time, regardless of any selection. Selecting the multi-area
+// itself still bumps the stroke weight up further for emphasis.
 function restyleMultiAreaLayer() {
   if (!multiAreaLayer) return;
   multiAreaLayer.forEach((feature) => {
     const areaName = feature.getProperty("grp");
-    const region = multiAreaRegionByName[areaName];
     const isDirectlySelected = !!(selection && selection.type === "area" && selection.name === areaName);
-    const hasRegionOverlap = !!multiAreaHasRegionOverlap[areaName];
-    const showTrueColor = isDirectlySelected || !hasRegionOverlap;
-    const ownColor = multiAreaColorByName[areaName] || "#000000";
-    const strokeColor = showTrueColor ? ownColor : (regionColorByName[region] || ownColor);
     multiAreaLayer.overrideStyle(feature, {
       fillOpacity: 0,
-      strokeColor,
+      strokeColor: multiAreaColorByName[areaName] || "#000000",
       strokeWeight: isDirectlySelected ? 5 : 4,
       clickable: false,
     });
@@ -1017,9 +1045,39 @@ function rebuildFromSources() {
   }
   allRepeaterPointsCache = allRepeaterPoints;
 
+  // Colors are now chosen by actual VISUAL distance, not just "is this
+  // exact hex string already used" -- two dark, similarly-saturated
+  // blues (like East TN's unified color and North AL's own individual
+  // area color both happening to be dark navy) can be entirely
+  // different hex STRINGS and still be nearly indistinguishable at a
+  // glance, which is what let that pairing slip through the earlier,
+  // exact-match-only version of this fix. Each region gets whichever
+  // palette color is FARTHEST (in RGB space) from the single closest
+  // color already in use by any area, multi-area, or previously
+  // assigned region -- a greedy "most different from its nearest
+  // neighbor" pick, not just "not identical to something else".
+  const usedColors = [];
+  for (const key in csvLookup) {
+    for (const m of csvLookup[key]) usedColors.push(m.color);
+  }
   regionColorByName = {};
   Object.keys(regionAreaColors).sort().forEach((region, idx) => {
-    regionColorByName[region] = REGION_COLOR_PALETTE[idx % REGION_COLOR_PALETTE.length];
+    let best = REGION_COLOR_PALETTE[0];
+    let bestMinDist = -1;
+    for (const candidate of REGION_COLOR_PALETTE) {
+      if (Object.values(regionColorByName).includes(candidate)) continue;
+      let minDist = usedColors.length ? Infinity : 999;
+      for (const used of usedColors) {
+        const d = colorDistance(candidate, used);
+        if (d < minDist) minDist = d;
+      }
+      if (minDist > bestMinDist) {
+        bestMinDist = minDist;
+        best = candidate;
+      }
+    }
+    regionColorByName[region] = best;
+    usedColors.push(best);  // so the NEXT region also avoids landing near this one
   });
 
   console.log("Loaded sources:", loadedSources.map((s) => s.name));
