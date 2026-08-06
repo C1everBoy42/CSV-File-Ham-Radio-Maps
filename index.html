@@ -416,12 +416,8 @@ function setUpLocateMeControl() {
     const matches = csvLookup[found.key];
     if (!matches || matches.length === 0) return;
     const match = matches.find((m) => m.type === "area") || matches[0];
-    selection = { type: "area", name: match.area };
-    applyStyling();
-    renderSidebarList();
-    renderRepeaterMarkers();
-    document.getElementById("clear-selection-btn").style.display = "inline-block";
-    renderSelectionBanner();
+    const multiMatch = matches.find((m) => m.type === "multiarea");
+    selectRegionAtPoint(match.region, match.area, multiMatch ? multiMatch.area : null);
   };
 
   btn.addEventListener("click", () => {
@@ -945,21 +941,17 @@ function handleWatchPosition(position) {
     lastWatchedRegionName = match.region;
 
     // Surface the newly-entered area the same way tapping it would --
-    // updates the map coloring, the sidebar's highlighted row, and the
-    // floating "Area — Region" banner over the map, so it's visible at
-    // a glance without needing to touch the phone while driving.
-    // Deliberately does NOT fitBounds() to the whole area's shape like
-    // a manual tap does -- re-fitting the zoom to a potentially huge
-    // area's full extent every time a boundary is crossed would yank
-    // the view around while driving. The pan/zoom-follow itself already
-    // happens on every position update above, regardless of area
-    // changes.
-    selection = { type: "area", name: match.area };
-    applyStyling();
-    renderSidebarList();
-    renderRepeaterMarkers();
-    document.getElementById("clear-selection-btn").style.display = "inline-block";
-    renderSelectionBanner();
+    // updates the map coloring (revealing the whole region's areas,
+    // same as a map click/locate-button selection does), the sidebar's
+    // highlighted row, and the floating banner (region + this specific
+    // area + any multi-area) over the map, so it's visible at a glance
+    // without needing to touch the phone while driving. Deliberately
+    // does NOT fitBounds() to the whole region's shape like a manual
+    // sidebar tap does -- re-fitting the zoom every time a boundary is
+    // crossed would yank the view around while driving. The pan/zoom-
+    // follow itself already happens on every position update above,
+    // regardless of area changes.
+    selectRegionAtPoint(match.region, match.area, multiMatch ? multiMatch.area : null);
     // If the sidebar happened to be open (unlikely while driving, but
     // possible), close it so the highlighted map/banner are actually
     // visible instead of hidden behind the drawer.
@@ -1050,14 +1042,15 @@ function showInfoForFeature(event) {
   });
   infoWindow.open(map);
 
-  // Clicking a colored region directly on the map selects/highlights
-  // that region (and its area list expands in the sidebar the same way
-  // clicking its name would) -- but no longer forces the sidebar drawer
-  // open on mobile to show that. That was disruptive on a phone,
-  // especially while just glancing at the map (or driving) -- the info
-  // popup above and the floating selection banner already show what
-  // was tapped without yanking a drawer open over the map.
-  selectRegion(match.region);
+  // Clicking a colored region directly on the map selects/highlights the
+  // specific AREA at that point (not just the region) -- so the banner
+  // can show area, region, and any multi-area overlapping that spot all
+  // together, same as the info popup above. No longer forces the
+  // sidebar drawer open on mobile either -- that was disruptive on a
+  // phone, especially while just glancing at the map (or driving); the
+  // info popup and banner already show what was tapped without a drawer
+  // yanked open over the map.
+  selectRegionAtPoint(match.region, match.area, multiMatch ? multiMatch.area : null);
 }
 
 // Extracts "Cullman" and "AL" out of a CHIRP Comment field formatted as
@@ -1549,24 +1542,41 @@ function findRegionForArea(areaName) {
   return null;
 }
 
+// True once the banner's own X has been pressed -- keeps it hidden
+// even though `selection` is still set underneath (closing the banner
+// no longer clears the actual region/area selection or its map
+// coloring; it just dismisses the little popup). Reset back to false
+// any time a NEW selection is made, so the banner comes back for
+// whatever's newly selected even if an earlier one was dismissed.
+let selectionBannerDismissed = false;
+
 function renderSelectionBanner() {
   const banner = document.getElementById("selection-banner");
-  if (!selection) {
+  if (!selection || selectionBannerDismissed) {
     banner.classList.remove("open");
     return;
   }
   let text;
   if (selection.type === "region") {
     text = "Region: " + selection.name;
+    // Set only by selectRegionAtPoint() -- the specific area (and any
+    // multi-area) at the point that was clicked/located, layered on top
+    // of the region-wide reveal rather than replacing it.
+    if (selection.pointArea) {
+      text += " \u2014 " + selection.pointArea;
+      if (selection.pointMultiArea) text += " (also in " + selection.pointMultiArea + ")";
+    }
   } else {
-    const region = findRegionForArea(selection.name);
+    const region = selection.region || findRegionForArea(selection.name);
     text = selection.name + (region ? " \u2014 " + region : "");
+    if (selection.multiArea) text += " (also in " + selection.multiArea + ")";
   }
   document.getElementById("selection-banner-text").textContent = text;
   banner.classList.add("open");
 }
 
 function selectRegion(name) {
+  selectionBannerDismissed = false;
   selection = { type: "region", name };
   applyStyling();
   renderSidebarList();
@@ -1584,6 +1594,7 @@ function selectRegion(name) {
 }
 
 function selectArea(name) {
+  selectionBannerDismissed = false;
   selection = { type: "area", name };
   applyStyling();
   renderSidebarList();
@@ -1594,8 +1605,29 @@ function selectArea(name) {
   if (window.innerWidth <= 700) closeSidebar();
 }
 
+// Selects the whole REGION at a specific MAP POINT (a map click, the
+// locate/track button, or the GPS watch) -- keeps the existing "region
+// selection reveals every one of its areas in their own true color"
+// behavior (see featureStyle()), while ALSO telling the banner exactly
+// which area (and any multi-area) sits at that specific point, so both
+// levels of detail show together instead of the banner only ever being
+// able to say the region's name. Deliberately does NOT fitBounds()/
+// re-zoom -- you're already looking at this spot (you either clicked it
+// or it's where you are), so jumping the camera to fit the whole
+// region's shape would just be disruptive here.
+function selectRegionAtPoint(region, area, multiAreaName) {
+  selectionBannerDismissed = false;
+  selection = { type: "region", name: region, pointArea: area, pointMultiArea: multiAreaName || null };
+  applyStyling();
+  renderSidebarList();
+  renderRepeaterMarkers();
+  document.getElementById("clear-selection-btn").style.display = "inline-block";
+  renderSelectionBanner();
+}
+
 function clearSelection() {
   selection = null;
+  selectionBannerDismissed = false;
   applyStyling();
   renderSidebarList();
   renderRepeaterMarkers();
@@ -1603,8 +1635,17 @@ function clearSelection() {
   renderSelectionBanner();
 }
 
+// Dismisses just the floating banner -- the underlying selection (map
+// coloring, sidebar highlight) stays exactly as it was. Use the
+// sidebar's "Show all (clear selection)" button, or clicking a
+// different region/area, to actually change what's selected.
+function dismissSelectionBanner() {
+  selectionBannerDismissed = true;
+  document.getElementById("selection-banner").classList.remove("open");
+}
+
 document.getElementById("clear-selection-btn").addEventListener("click", clearSelection);
-document.getElementById("selection-banner-close").addEventListener("click", clearSelection);
+document.getElementById("selection-banner-close").addEventListener("click", dismissSelectionBanner);
 
 document.getElementById("marker-toggle").addEventListener("change", (event) => {
   showMarkers = event.target.checked;
