@@ -689,7 +689,7 @@ function findMyLocation() {
       });
 
       map.panTo(latLng);
-      map.setZoom(10);
+      map.setZoom(13);
 
       if (!countiesLayer) {
         statusEl.textContent = "County boundaries haven't finished loading yet -- try again in a moment.";
@@ -776,6 +776,13 @@ function handleWatchPosition(position) {
     zIndex: 999,
   });
 
+  // Keeps the map actually following your position on EVERY ping, not
+  // just when you cross into a new county -- otherwise between area
+  // changes the marker could quietly drift toward (or off) the edge of
+  // the screen while driving, with nothing bringing it back into view.
+  map.panTo(latLng);
+  if (map.getZoom() < 10) map.setZoom(13);
+
   if (!countiesLayer) return;
   const found = findCountyKeyAtPoint(latLng);
   const key = found ? found.key : null;
@@ -816,17 +823,15 @@ function handleWatchPosition(position) {
     // Deliberately does NOT fitBounds() to the whole area's shape like
     // a manual tap does -- re-fitting the zoom to a potentially huge
     // area's full extent every time a boundary is crossed would yank
-    // the view around while driving. Instead it just gently recenters
-    // on the current position, and only nudges the zoom level if it's
-    // currently too far out to be useful for someone on the move.
+    // the view around while driving. The pan/zoom-follow itself already
+    // happens on every position update above, regardless of area
+    // changes.
     selection = { type: "area", name: match.area };
     applyStyling();
     renderSidebarList();
     renderRepeaterMarkers();
     document.getElementById("clear-selection-btn").style.display = "inline-block";
     renderSelectionBanner();
-    map.panTo(latLng);
-    if (map.getZoom() < 8) map.setZoom(10);
     // If the sidebar happened to be open (unlikely while driving, but
     // possible), close it so the highlighted map/banner are actually
     // visible instead of hidden behind the drawer.
@@ -910,15 +915,14 @@ function showInfoForFeature(event) {
   });
   infoWindow.open(map);
 
-  // Clicking a colored region directly on the map selects that region
-  // the same way clicking its name in the sidebar does -- which reveals
-  // (expands) its area list there. On mobile the sidebar drawer is
-  // opened too, since that expanded area list is otherwise hidden
-  // behind it -- tapping a region on the map is exactly the "show me
-  // what's in this region" gesture the sidebar's own region click
-  // handles, just triggered from the map side instead.
+  // Clicking a colored region directly on the map selects/highlights
+  // that region (and its area list expands in the sidebar the same way
+  // clicking its name would) -- but no longer forces the sidebar drawer
+  // open on mobile to show that. That was disruptive on a phone,
+  // especially while just glancing at the map (or driving) -- the info
+  // popup above and the floating selection banner already show what
+  // was tapped without yanking a drawer open over the map.
   selectRegion(match.region);
-  if (window.innerWidth <= 700) openSidebar();
 }
 
 // Extracts "Cullman" and "AL" out of a CHIRP Comment field formatted as
