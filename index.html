@@ -739,6 +739,12 @@ let lastWatchedAreaKey = null;   // countyKey last matched, so pure GPS
                                   // re-fire the notification every ping
 let lastWatchedAreaName = null;
 let lastWatchedRegionName = null;
+// Only the FIRST position update after starting a watch session forces
+// the zoom in -- after that the person can freely zoom back out (to see
+// more surrounding context, a whole region, etc.) without the next GPS
+// ping immediately snapping it back in. Reset to false each time
+// startLocationWatch() runs.
+let hasSetInitialWatchZoom = false;
 
 function announceAreaChange(text) {
   const statusEl = document.getElementById("location-watch-status");
@@ -781,7 +787,17 @@ function handleWatchPosition(position) {
   // changes the marker could quietly drift toward (or off) the edge of
   // the screen while driving, with nothing bringing it back into view.
   map.panTo(latLng);
-  if (map.getZoom() < 12) map.setZoom(15);
+  // The zoom nudge itself only happens ONCE per watch session (the
+  // first fix after turning tracking on) -- applying it on every single
+  // ping meant zooming back out to see more of the map (a wider view of
+  // the area/region you're in, not just your immediate street) got
+  // immediately overridden by the very next GPS update snapping back to
+  // zoom 15. Panning still follows you continuously either way; only
+  // the forced zoom-in is one-time.
+  if (!hasSetInitialWatchZoom) {
+    if (map.getZoom() < 12) map.setZoom(15);
+    hasSetInitialWatchZoom = true;
+  }
 
   if (!countiesLayer) return;
   const found = findCountyKeyAtPoint(latLng);
@@ -849,6 +865,7 @@ function startLocationWatch() {
   lastWatchedAreaKey = null;
   lastWatchedAreaName = null;
   lastWatchedRegionName = null;
+  hasSetInitialWatchZoom = false;
   statusEl.textContent = "Watching your location...";
 
   if (typeof Notification !== "undefined" && Notification.permission === "default") {
