@@ -96,6 +96,29 @@
     display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 15;
   }
 
+  /* Floating confirmation that appears over the MAP (not the sidebar)
+     whenever a region/area is selected -- on mobile the sidebar drawer
+     auto-closes right after selecting something, so without this
+     there'd be no visible sign of what got selected until reopening
+     the drawer. Shown on all screen sizes since it's useful context on
+     desktop too, just especially needed on mobile. */
+  #selection-banner {
+    display: none; position: absolute; top: 12px; left: 50%;
+    transform: translateX(-50%); z-index: 20;
+    background: #1e2a38; color: #eef2f7; padding: 8px 8px 8px 14px;
+    border-radius: 20px; font-size: 13px; font-weight: 600;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    align-items: center; gap: 8px; max-width: 80vw;
+  }
+  #selection-banner.open { display: flex; }
+  #selection-banner-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #selection-banner-close {
+    background: rgba(255,255,255,0.12); border: none; color: #eef2f7;
+    font-size: 16px; line-height: 1; cursor: pointer; padding: 4px 8px;
+    border-radius: 50%; flex-shrink: 0;
+  }
+  #selection-banner-close:hover { background: rgba(255,255,255,0.22); }
+
   /* Phone-sized screens: sidebar becomes a slide-in drawer over the
      map instead of taking permanent horizontal space, and touch
      targets get bigger. */
@@ -183,6 +206,10 @@
     <div id="region-list"></div>
   </div>
   <div id="map"></div>
+  <div id="selection-banner">
+    <span id="selection-banner-text"></span>
+    <button id="selection-banner-close" aria-label="Clear selection">&times;</button>
+  </div>
 </div>
 
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
@@ -938,6 +965,8 @@ function rebuildFromSources() {
   selection = null;
   const clearBtn = document.getElementById("clear-selection-btn");
   if (clearBtn) clearBtn.style.display = "none";
+  const banner = document.getElementById("selection-banner");
+  if (banner) banner.classList.remove("open");
 
   csvLookup = {};
   regionAreaColors = {};
@@ -1175,14 +1204,18 @@ function renderSidebarList() {
     header.appendChild(title);
 
     // Clicking the arrow just expands/collapses the list of areas.
-    // Clicking the region name selects/zooms to the region on the map
-    // (existing behavior) AND expands it if it was collapsed -- seeing
-    // a region highlighted with its area list hidden would be confusing.
+    // Clicking anywhere else in the header row selects/zooms to the
+    // region on the map (existing behavior) AND expands it if it was
+    // collapsed -- seeing a region highlighted with its area list
+    // hidden would be confusing. The select handler is on the whole
+    // HEADER (not just the name text) so the tappable area is the full
+    // row width -- a much easier touch target on a phone than just the
+    // text glyphs.
     arrow.addEventListener("click", (evt) => {
       evt.stopPropagation();
       toggleRegionCollapsed(region);
     });
-    title.addEventListener("click", () => {
+    header.addEventListener("click", () => {
       collapsedRegions.delete(region);  // selecting it should reveal its areas
       selectRegion(region);  // re-renders the sidebar itself
     });
@@ -1248,6 +1281,17 @@ function fitBoundsToSelection(sel) {
   if (found) map.fitBounds(bounds);
 }
 
+function renderSelectionBanner() {
+  const banner = document.getElementById("selection-banner");
+  if (!selection) {
+    banner.classList.remove("open");
+    return;
+  }
+  document.getElementById("selection-banner-text").textContent =
+    (selection.type === "region" ? "Region: " : "Area: ") + selection.name;
+  banner.classList.add("open");
+}
+
 function selectRegion(name) {
   selection = { type: "region", name };
   applyStyling();
@@ -1255,6 +1299,7 @@ function selectRegion(name) {
   fitBoundsToSelection(selection);
   renderRepeaterMarkers();
   document.getElementById("clear-selection-btn").style.display = "inline-block";
+  renderSelectionBanner();
   if (window.innerWidth <= 700) closeSidebar();
 }
 
@@ -1265,6 +1310,7 @@ function selectArea(name) {
   fitBoundsToSelection(selection);
   renderRepeaterMarkers();
   document.getElementById("clear-selection-btn").style.display = "inline-block";
+  renderSelectionBanner();
   if (window.innerWidth <= 700) closeSidebar();
 }
 
@@ -1274,9 +1320,11 @@ function clearSelection() {
   renderSidebarList();
   renderRepeaterMarkers();
   document.getElementById("clear-selection-btn").style.display = "none";
+  renderSelectionBanner();
 }
 
 document.getElementById("clear-selection-btn").addEventListener("click", clearSelection);
+document.getElementById("selection-banner-close").addEventListener("click", clearSelection);
 
 document.getElementById("marker-toggle").addEventListener("change", (event) => {
   showMarkers = event.target.checked;
