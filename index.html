@@ -689,7 +689,7 @@ function findMyLocation() {
       });
 
       map.panTo(latLng);
-      map.setZoom(13);
+      map.setZoom(15);
 
       if (!countiesLayer) {
         statusEl.textContent = "County boundaries haven't finished loading yet -- try again in a moment.";
@@ -781,7 +781,7 @@ function handleWatchPosition(position) {
   // changes the marker could quietly drift toward (or off) the edge of
   // the screen while driving, with nothing bringing it back into view.
   map.panTo(latLng);
-  if (map.getZoom() < 10) map.setZoom(13);
+  if (map.getZoom() < 12) map.setZoom(15);
 
   if (!countiesLayer) return;
   const found = findCountyKeyAtPoint(latLng);
